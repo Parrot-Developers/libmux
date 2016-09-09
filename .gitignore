@@ -1,0 +1,25 @@
+# eclipse projects
+.pydevproject
+.cproject
+.project
+.settings/
+
+# backup files
+*~
+*.swp
+
+# autotools generated struff
+config/
+m4/
+configure
+config.h.in
+aclocal.m4
+Makefile.in
+INSTALL
+
+# MacOS junk
+.DS_Store
+
+#android
+android/build/
+android/libmux.iml
