@@ -973,7 +973,7 @@ error:
 /*
  * See documentation in public header.
  */
-MUX_API void mux_ref(struct mux_ctx *ctx)
+void mux_ref(struct mux_ctx *ctx)
 {
 	int res;
 	if (ctx == NULL)
@@ -993,7 +993,7 @@ MUX_API void mux_ref(struct mux_ctx *ctx)
 /*
  * See documentation in public header.
  */
-MUX_API void mux_unref(struct mux_ctx *ctx)
+void mux_unref(struct mux_ctx *ctx)
 {
 	uint32_t res = 0;
 	if (ctx == NULL)
@@ -1017,7 +1017,7 @@ MUX_API void mux_unref(struct mux_ctx *ctx)
 /*
  * See documentation in public header.
  */
-MUX_API struct pomp_loop *mux_get_loop(struct mux_ctx *ctx)
+struct pomp_loop *mux_get_loop(struct mux_ctx *ctx)
 {
 	return ctx == NULL ? NULL : ctx->loop;
 }
@@ -1025,7 +1025,7 @@ MUX_API struct pomp_loop *mux_get_loop(struct mux_ctx *ctx)
 /*
  * See documentation in public header.
  */
-MUX_API int mux_stop(struct mux_ctx *ctx)
+int mux_stop(struct mux_ctx *ctx)
 {
 	struct mux_channel *channel = NULL;
 	struct mux_channel *next = NULL;
