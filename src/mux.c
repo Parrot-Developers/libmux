@@ -1017,6 +1017,14 @@ MUX_API void mux_unref(struct mux_ctx *ctx)
 /*
  * See documentation in public header.
  */
+MUX_API struct pomp_loop *mux_get_loop(struct mux_ctx *ctx)
+{
+	return ctx == NULL ? NULL : ctx->loop;
+}
+
+/*
+ * See documentation in public header.
+ */
 MUX_API int mux_stop(struct mux_ctx *ctx)
 {
 	struct mux_channel *channel = NULL;
@@ -1484,13 +1492,6 @@ struct mux_channel *mux_remove_channels(struct mux_ctx *ctx)
 
 	pthread_mutex_unlock(&ctx->mutex);
 	return channels;
-}
-
-/**
- */
-struct pomp_loop *mux_get_loop(struct mux_ctx *ctx)
-{
-	return ctx == NULL ? NULL : ctx->loop;
 }
 
 /**

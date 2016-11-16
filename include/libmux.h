@@ -152,6 +152,13 @@ MUX_API void mux_ref(struct mux_ctx *ctx);
 MUX_API void mux_unref(struct mux_ctx *ctx);
 
 /**
+ * Get the loop associated with the mux context.
+ * @param ctx : mux context.
+ * @param associated loop.
+ */
+MUX_API struct pomp_loop *mux_get_loop(struct mux_ctx *ctx);
+
+/**
  * Stop a mux context. Shall be called prior to destroy the context. After this
  * call, the thread that called mux_run can be safely joined.
  * @param ctx : mux context.
