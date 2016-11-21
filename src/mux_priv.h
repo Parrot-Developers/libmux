@@ -109,7 +109,6 @@ struct mux_ctrl_msg {
 struct mux_channel;
 
 /* Internal context API */
-struct pomp_loop *mux_get_loop(struct mux_ctx *ctx);
 
 int mux_loop_acquire(struct mux_ctx *ctx, int willblock);
 
