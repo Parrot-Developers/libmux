@@ -13,6 +13,8 @@ LOCAL_LIBRARIES := libpomp
 LOCAL_CONDITIONAL_LIBRARIES := OPTIONAL:libulog
 include $(BUILD_LIBRARY)
 
+ifeq ("$(TARGET_OS)","linux")
+
 include $(CLEAR_VARS)
 LOCAL_MODULE := mux-client
 LOCAL_SRC_FILES := tests/client.c
@@ -39,3 +41,5 @@ LOCAL_LIBRARIES := \
 	libmux \
 	libulog
 include $(BUILD_EXECUTABLE)
+
+endif

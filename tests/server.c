@@ -71,6 +71,7 @@ struct app {
 	struct mux_ctx            *muxctx;
 	pthread_t                  mux_thread;
 
+	ARCOMMANDS_Decoder_t       *decoder;
 	ARNETWORK_IOBufferParam_t  *c2d_params;
 	size_t                     c2d_params_nb;
 	ARNETWORK_IOBufferParam_t  *d2c_params;
@@ -90,6 +91,7 @@ static struct app s_app = {
 	.pompctx = NULL,
 	.pompconn = NULL,
 	.muxctx = NULL,
+	.decoder = NULL,
 	.c2d_params = NULL,
 	.c2d_params_nb = 0,
 	.d2c_params = NULL,
@@ -111,6 +113,7 @@ static int on_mux_tx(struct mux_ctx *ctx, struct pomp_buffer *buf,
 /**
  */
 static void on_mux_rx(struct mux_ctx *ctx, uint32_t chanid,
+		enum mux_channel_event event,
 		struct pomp_buffer *buf,
 		void *userdata)
 {
@@ -175,11 +178,13 @@ static int read_data(void)
 		res = 0;
 		log_cmd(s_app.read_buf, read_size);
 
-		cmd_dec_err = ARCOMMANDS_Decoder_DecodeBuffer(s_app.read_buf,
+		cmd_dec_err = ARCOMMANDS_Decoder_DecodeCommand(
+				s_app.decoder,
+				s_app.read_buf,
 				read_size);
 		if (cmd_dec_err != ARCOMMANDS_DECODER_OK && cmd_dec_err !=
 				ARCOMMANDS_DECODER_ERROR_NO_CALLBACK) {
-			LOGE("ARCOMMANDS_Decoder_DecodeBuffer err=%d",
+			LOGE("ARCOMMANDS_Decoder_DecodeCommand err=%d",
 					cmd_dec_err);
 		}
 	}
@@ -251,13 +256,14 @@ static eARNETWORK_MANAGER_CALLBACK_RETURN send_cb(int iobufid,
 /**
  */
 static void pcmd_cb(uint8_t flag, int8_t roll, int8_t pitch, int8_t yaw,
-		int8_t gaz, float psi, void *userdata)
+		int8_t gaz, uint32_t timestampAndSeqNum, void *userdata)
 {
 	eARCOMMANDS_GENERATOR_ERROR cmd_err = ARCOMMANDS_GENERATOR_OK;
 	eARNETWORK_ERROR net_err = ARNETWORK_OK;
 	uint8_t buf[512];
 	int32_t len = 0;
 
+	/* codecheck_ignore[LONG_LINE] */
 	cmd_err = ARCOMMANDS_Generator_GenerateARDrone3GPSSettingsStateGPSFixStateChanged(
 			buf, (int32_t)sizeof(buf), &len,
 			0 /* _fixed */);
@@ -281,6 +287,7 @@ static void pcmd_cb(uint8_t flag, int8_t roll, int8_t pitch, int8_t yaw,
 static void on_connected(void)
 {
 	int res = 0;
+	eARCOMMANDS_DECODER_ERROR cmd_err = ARCOMMANDS_DECODER_OK;
 	eARNETWORKAL_ERROR netal_err = ARNETWORKAL_OK;
 	eARNETWORK_ERROR net_err = ARNETWORK_OK;
 	struct mux_ops ops;
@@ -289,8 +296,13 @@ static void on_connected(void)
 	/* Setup mux context */
 	memset(&ops, 0, sizeof(ops));
 	ops.tx = &on_mux_tx;
-	ops.rx = &on_mux_rx;
+	ops.chan_cb = &on_mux_rx;
 	s_app.muxctx = mux_new(-1, NULL, &ops, 0);
+
+	/* create arsdk decoder */
+	s_app.decoder = ARCOMMANDS_Decoder_NewDecoder(&cmd_err);
+	if (cmd_err != ARCOMMANDS_DECODER_OK)
+		LOGE("ARCOMMANDS_Decoder_NewDecoder: err=%d", cmd_err);
 
 	/* create arsdk commands */
 	s_app.c2d_params_nb = sizeof(s_c2d_params) / sizeof(s_c2d_params[0]);
@@ -361,7 +373,8 @@ static void on_connected(void)
 	if (res != 0)
 		LOG_ERR("pthread_create", res);
 
-	ARCOMMANDS_Decoder_SetARDrone3PilotingPCMDCallback(&pcmd_cb, NULL);
+	ARCOMMANDS_Decoder_SetARDrone3PilotingPCMDCb(s_app.decoder,
+			&pcmd_cb, NULL);
 }
 
 /**
@@ -392,6 +405,7 @@ static void on_disconnected(void)
 		/* Free resources */
 		ARNETWORK_Manager_Delete(&s_app.net_mngr);
 		ARNETWORKAL_Manager_Delete(&s_app.netal_mngr);
+		ARCOMMANDS_Decoder_DeleteDecoder(&s_app.decoder);
 		free(s_app.c2d_params);
 		free(s_app.d2c_params);
 		s_app.c2d_params = NULL;
