@@ -1330,6 +1330,7 @@ int mux_channel_recv_ctrl_msg(struct mux_ctx *ctx,
 	const char *hostname;
 	uint32_t hostaddr;
 	int ret;
+	struct mux_channel *channel;
 
 	switch (msg->id) {
 	case MUX_CTRL_MSG_ID_CHANNEL_OPEN:
@@ -1344,6 +1345,12 @@ int mux_channel_recv_ctrl_msg(struct mux_ctx *ctx,
 				msg->chanid, get_type_str(msg->args[0]));
 		if (msg->args[0] == MUX_CHANNEL_TYPE_TCP_MASTER)
 			mux_channel_close_tcp_slave(ctx, msg->chanid);
+		/* Send a reset callback to the channel */
+		channel = mux_find_channel(ctx, msg->chanid);
+		if (channel && channel->cb)
+			(*channel->cb) (channel->ctx, channel->chanid,
+					MUX_CHANNEL_RESET, NULL,
+					channel->userdata);
 		break;
 
 	case MUX_CTRL_MSG_ID_CHANNEL_TCP_CONNECT:
