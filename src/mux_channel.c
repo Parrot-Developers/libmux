@@ -30,8 +30,8 @@
 #include <sys/ioctl.h>
 #include "mux_priv.h"
 
-#define MUX_CHANNEL_TCP_ACK_BYTES_INTL (64 * 1024) /* 64 KB */
-#define MUX_CHANNEL_TCP_SLAVE_FIFO_TIMEOUT 100 /* 100 ms */
+#define MUX_CHANNEL_TCP_ACK_BYTES_INTL (1024 * 1024) /* 1 MB */
+#define MUX_CHANNEL_TCP_SLAVE_FIFO_TIMEOUT 50 /* 50 ms */
 
 static int mux_channel_disconnect_tcp_slave(struct mux_ctx *ctx,
 		uint32_t masterid);
@@ -145,13 +145,12 @@ static struct mux_channel *mux_channel_new(struct mux_ctx *ctx,
 	case MUX_CHANNEL_TYPE_NORMAL:
 		break;
 	case MUX_CHANNEL_TYPE_TCP_MASTER:
-		channel->tcpmaster.ctx = NULL;
 		channel->tcpmaster.conn = NULL;
 		channel->tcpmaster.state = MUX_TCP_STATE_IDLE;
 		channel->tcpmaster.remoteport = 0;
 		channel->tcpmaster.remotehost = NULL;
 		channel->tcpmaster.isftpctrl = 0;
-		channel->tcpmaster.ftpdatachan = NULL;
+		channel->tcpmaster.ftpdataproxy = NULL;
 		channel->tcpmaster.tx_ack_bytes = 0;
 		channel->tcpmaster.waiting_ack = 0;
 		break;
@@ -263,7 +262,7 @@ error:
  * @return 0 in case of success, negative errno value in case of error.
  */
 static int mux_channel_close_internal(struct mux_channel *channel,
-			int do_destroy)
+		int do_destroy)
 {
 	struct mux_ctrl_msg ctrl_msg;
 	MUX_LOGD("Closing channel 0x%08x", channel->chanid);
@@ -275,10 +274,9 @@ static int mux_channel_close_internal(struct mux_channel *channel,
 	/* Close data channel of ftp master */
 	if (channel->type == MUX_CHANNEL_TYPE_TCP_MASTER
 			&& channel->tcpmaster.isftpctrl
-			&& channel->tcpmaster.ftpdatachan != NULL) {
-		mux_channel_close_internal(channel->tcpmaster.ftpdatachan,
-				do_destroy);
-		channel->tcpmaster.ftpdatachan = NULL;
+			&& channel->tcpmaster.ftpdataproxy != NULL) {
+		mux_tcp_proxy_destroy(channel->tcpmaster.ftpdataproxy);
+		channel->tcpmaster.ftpdataproxy = NULL;
 	}
 
 	if (channel->type == MUX_CHANNEL_TYPE_TCP_SLAVE)
@@ -403,7 +401,7 @@ static int mux_channel_tcp_request_ack(struct mux_ctx *ctx, uint32_t masterid)
 	if (channel->tcpslave.send_queue_empty) {
 		/* pomp has written all data, wait kernel socket send them */
 		pomp_timer_set_periodic(channel->tcpslave.queue_timer,
-				MUX_CHANNEL_TCP_SLAVE_FIFO_TIMEOUT,
+				1,
 				MUX_CHANNEL_TCP_SLAVE_FIFO_TIMEOUT);
 	}
 
@@ -437,7 +435,6 @@ static int mux_channel_tcp_ack(struct mux_ctx *ctx, uint32_t slaveid)
 	return 0;
 }
 
-
 /**
  * Check if a received buffer from a ftp control connection contains an
  * EPSV (extended passive mode) response. If yes, extract port information,
@@ -456,7 +453,6 @@ static struct pomp_buffer *master_check_ftp_epsv(struct mux_channel *channel,
 	size_t len = 0, i = 0, j = 0, portlen = 0;
 	int remoteport = -1;
 	uint16_t localport = 0;
-	uint32_t ftpdatachanid = 0;
 	struct pomp_buffer *newbuf = NULL;
 	void *newdata = NULL;
 	char *newdatastr = NULL;
@@ -500,19 +496,18 @@ static struct pomp_buffer *master_check_ftp_epsv(struct mux_channel *channel,
 
 	/* If there is already a data channel for this ftp connection,
 	 * close it */
-	if (channel->tcpmaster.ftpdatachan != NULL)
-		mux_channel_close_internal(channel->tcpmaster.ftpdatachan, 1);
+	if (channel->tcpmaster.ftpdataproxy != NULL)
+		mux_tcp_proxy_destroy(channel->tcpmaster.ftpdataproxy);
 
-	channel->tcpmaster.ftpdatachan = NULL;
+	channel->tcpmaster.ftpdataproxy = NULL;
 
 	/* Open a new channel for data connection */
-	if (mux_channel_open_tcp(channel->ctx,
-			channel->tcpmaster.remotehost, remoteport,
-			&localport, &ftpdatachanid) < 0) {
+	if (mux_tcp_proxy_new(channel->ctx,
+				channel->tcpmaster.remotehost, remoteport, 0,
+				&channel->tcpmaster.ftpdataproxy) < 0) {
 		goto error;
 	}
-	channel->tcpmaster.ftpdatachan = mux_find_channel(
-			channel->ctx, ftpdatachanid);
+	localport = mux_tcp_proxy_get_port(channel->tcpmaster.ftpdataproxy);
 
 	/* At this stage, i points to start of port num and j after port num
 	 * Allocate a new buffer to patch response (+5 is to ensure room
@@ -546,16 +541,13 @@ error:
 }
 
 /**
- * Tcp master channel event callback.
+ * See documentation in header.
  */
-static void master_event_cb(struct pomp_ctx *ctx,
+void mux_channel_tcpmaster_event(struct mux_channel *channel,
 		enum pomp_event event,
-		struct pomp_conn *conn,
-		const struct pomp_msg *msg,
-		void *userdata)
+		struct pomp_conn *conn)
 {
 	int res = 0;
-	struct mux_channel *channel = userdata;
 	struct mux_ctrl_msg ctrl_msg;
 	struct pomp_buffer *buf = NULL;
 
@@ -608,8 +600,10 @@ static void master_event_cb(struct pomp_ctx *ctx,
 
 		/* Stop associated data channel for ftp ctrl */
 		if (channel->tcpmaster.isftpctrl &&
-				channel->tcpmaster.ftpdatachan != NULL) {
-			mux_channel_stop(channel->tcpmaster.ftpdatachan);
+				channel->tcpmaster.ftpdataproxy != NULL) {
+			mux_tcp_proxy_destroy(
+					channel->tcpmaster.ftpdataproxy);
+			channel->tcpmaster.ftpdataproxy = NULL;
 		}
 
 		/* Send message on control channel (ignore errors) */
@@ -631,17 +625,15 @@ static void master_event_cb(struct pomp_ctx *ctx,
 }
 
 /**
- * Tcp master channel data callback.
+ * See documentation in header.
  */
-static void master_raw_cb(struct pomp_ctx *ctx,
+void mux_channel_tcpmaster_raw(struct mux_channel *channel,
 		struct pomp_conn *conn,
-		struct pomp_buffer *buf,
-		void *userdata)
+		struct pomp_buffer *buf)
 {
 	int res = 0;
 	size_t len;
 	struct mux_ctrl_msg ctrl_msg;
-	struct mux_channel *channel = userdata;
 
 	/* Get data len */
 	res = pomp_buffer_get_cdata(buf, NULL, &len, NULL);
@@ -719,7 +711,6 @@ static void slave_event_cb(struct pomp_ctx *ctx,
 		channel->tcpslave.conn = conn;
 		channel->tcpslave.state = MUX_TCP_STATE_CONNECTED;
 		channel->tcpslave.send_queue_empty = 1;
-		channel->tcpslave.ack_req = 0;
 
 		/* Write data received on while connecting */
 		while (mux_queue_try_get_buf(channel->queue, &buf) == 0) {
@@ -825,7 +816,7 @@ static void slave_send_cb(struct pomp_ctx *ctx,
 			  (status & POMP_SEND_STATUS_ABORTED) == 0) {
 			/* start polling kernel socket buffer */
 			pomp_timer_set_periodic(channel->tcpslave.queue_timer,
-				MUX_CHANNEL_TCP_SLAVE_FIFO_TIMEOUT,
+				1,
 				MUX_CHANNEL_TCP_SLAVE_FIFO_TIMEOUT);
 		}
 	} else {
@@ -846,8 +837,8 @@ static void slave_tcp_socket_cb(struct pomp_ctx *ctx,
  * Connect slave tcp channel to remote address.
  * @param ctx : mux context.
  * @param masterid : id of master channel.
- * @param remoteaddr : remote address to connect to (IPv4, host byte order).
- * @param remoteport : remote port to connect to.
+ * @param remoteaddr : remote IPV4 address to connect to in network byte order.
+ * @param remoteport : remote port to connect to in host byte order.
  * @return 0 in case of success, negative errno value in case of error.
  */
 static int mux_channel_connect_tcp_slave(struct mux_ctx *ctx,
@@ -895,7 +886,7 @@ static int mux_channel_connect_tcp_slave(struct mux_ctx *ctx,
 	/* Setup address */
 	memset(&addr, 0, sizeof(addr));
 	addr.sin_family = AF_INET;
-	addr.sin_addr.s_addr = htonl(remoteaddr);
+	addr.sin_addr.s_addr = remoteaddr;
 	addr.sin_port = htons(remoteport);
 
 	/* Add socket cb to retrieve socket fd */
@@ -1017,17 +1008,13 @@ int mux_channel_close(struct mux_ctx *ctx, uint32_t chanid)
 /*
  * See documentation in public header.
  */
-int mux_channel_open_tcp(struct mux_ctx *ctx,
-		const char *remotehost, uint16_t remoteport,
-		uint16_t *localport, uint32_t *chanid)
+int mux_channel_open_tcp(struct mux_ctx *ctx, const char *remotehost,
+		uint16_t remoteport, uint32_t *chanid)
 {
 	int res = 0;
 	struct mux_channel *channel = NULL;
-	struct sockaddr_in addr;
-	const struct sockaddr *local_addr = NULL;
-	uint32_t addrlen = 0;
 
-	if (ctx == NULL || localport == NULL || chanid == NULL ||
+	if (ctx == NULL || chanid == NULL ||
 		remotehost == NULL)
 		return -EINVAL;
 
@@ -1054,27 +1041,6 @@ int mux_channel_open_tcp(struct mux_ctx *ctx,
 		goto error;
 	}
 
-	/* Create context and make it raw */
-	channel->tcpmaster.ctx = pomp_ctx_new_with_loop(&master_event_cb,
-			channel, channel->loop);
-	if (channel->tcpmaster.ctx == NULL)
-		return -ENOMEM;
-	res = pomp_ctx_set_raw(channel->tcpmaster.ctx, &master_raw_cb);
-	if (res < 0)
-		goto error;
-
-	/* Disable keepalive */
-	res = pomp_ctx_setup_keepalive(channel->tcpmaster.ctx, 0, 0, 0, 0);
-	if (res < 0)
-		goto error;
-
-	/* Setup address (bind to a random port) */
-	memset(&addr, 0, sizeof(addr));
-	addr.sin_family = AF_INET;
-	addr.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
-	addr.sin_port = 0;
-	addrlen = sizeof(addr);
-
 	/* set state BEFORE listen call, connection can succeed now
 	 * but without knowing the port it might be a bit difficult ;) */
 	channel->tcpmaster.state = MUX_TCP_STATE_CONNECTING;
@@ -1085,26 +1051,6 @@ int mux_channel_open_tcp(struct mux_ctx *ctx,
 		goto error;
 	}
 
-	/* Start listening */
-	res = pomp_ctx_listen(channel->tcpmaster.ctx,
-			(const struct sockaddr *)&addr, addrlen);
-	if (res < 0) {
-		MUX_LOG_ERR("pomp_ctx_listen", -res);
-		goto error;
-	}
-
-	/* Retrieve bound local port */
-	local_addr = pomp_ctx_get_local_addr(channel->tcpmaster.ctx, &addrlen);
-	if (local_addr == NULL || addrlen < sizeof(struct sockaddr_in)) {
-		MUX_LOGE("Invalid bound local address");
-		goto error;
-	}
-	if (local_addr->sa_family != AF_INET) {
-		MUX_LOGE("Invalid bound local address family");
-		goto error;
-	}
-	*localport = ntohs(((const struct sockaddr_in *)local_addr)->sin_port);
-
 	mux_loop_release(ctx);
 	return 0;
 
@@ -1112,42 +1058,7 @@ int mux_channel_open_tcp(struct mux_ctx *ctx,
 error:
 	if (channel != NULL)
 		mux_channel_close(ctx, *chanid);
-	*localport = 0;
 	*chanid = 0;
-	mux_loop_release(ctx);
-	return res;
-}
-
-/*
- * See documentation in public header.
- */
-int mux_channel_open_ftp(struct mux_ctx *ctx,
-		const char *remotehost, uint16_t remoteport,
-		uint16_t *localport, uint32_t *chanid)
-{
-	int res = 0;
-	struct mux_channel *channel = NULL;
-
-	mux_loop_acquire(ctx, 0);
-
-	/* Open the tcp connection for control */
-	res = mux_channel_open_tcp(ctx, remotehost, remoteport,
-			localport, chanid);
-	if (res < 0)
-		goto out;
-
-	/* Find back the channel structure */
-	channel = mux_find_channel(ctx, *chanid);
-	if (channel == NULL) {
-		mux_channel_close(ctx, *chanid);
-		res = -ENOENT;
-		goto out;
-	}
-
-	/* Remember it is a ftp control connection */
-	channel->tcpmaster.isftpctrl = 1;
-
-out:
 	mux_loop_release(ctx);
 	return res;
 }
@@ -1200,12 +1111,12 @@ int mux_channel_stop(struct mux_channel *channel)
 		break;
 
 	case MUX_CHANNEL_TYPE_TCP_MASTER:
-		if (channel->tcpmaster.ctx != NULL) {
-			pomp_ctx_stop(channel->tcpmaster.ctx);
-			pomp_ctx_destroy(channel->tcpmaster.ctx);
-			channel->tcpmaster.ctx = NULL;
-			channel->tcpmaster.conn = NULL;
-		}
+		MUX_LOGI("master 0x%08x: channel stopped",
+			channel->chanid);
+		channel->tcpmaster.waiting_ack = 0;
+		channel->tcpmaster.tx_ack_bytes = 0;
+		if (channel->tcpmaster.conn != NULL)
+			pomp_conn_disconnect(channel->tcpmaster.conn);
 		channel->tcpmaster.state = MUX_TCP_STATE_IDLE;
 		break;
 
@@ -1252,7 +1163,7 @@ int mux_channel_put_buf(struct mux_channel *channel, struct pomp_buffer *buf)
 	/* Is it data for a master tcp connection ? */
 	if (channel->type == MUX_CHANNEL_TYPE_TCP_MASTER) {
 		log_buf("master mux->client", buf);
-		conn = channel->tcpslave.conn;
+		conn = channel->tcpmaster.conn;
 		if (conn == NULL)
 			return mux_queue_put_buf(channel->queue, buf);
 		if (channel->tcpmaster.isftpctrl) {

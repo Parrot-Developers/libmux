@@ -131,10 +131,11 @@ Java_com_parrot_mux_Mux_nativeNew (JNIEnv *env, jobject thizz, jint fd)
 		goto fail;
 	}
 
-	struct mux_ops ops;
-	ops.chan_cb = &on_mux_channel_cb;
-	ops.fdeof = &on_mux_fdeof;
-	ops.userdata = ctx;
+	struct mux_ops ops = {
+		.chan_cb = &on_mux_channel_cb,
+		.fdeof = &on_mux_fdeof,
+		.userdata = ctx,
+	};
 
 	ctx->muxctx = mux_new(fd, NULL, &ops, MUX_FLAG_FD_NOT_POLLABLE);
 	if (ctx->muxctx == NULL)

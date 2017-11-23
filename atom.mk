@@ -8,8 +8,9 @@ LOCAL_SRC_FILES := \
 	src/mux.c \
 	src/mux_channel.c \
 	src/mux_log.c \
-	src/mux_queue.c
-LOCAL_LIBRARIES := libpomp
+	src/mux_queue.c \
+	src/mux_tcp_proxy.c
+LOCAL_LIBRARIES := libpomp libfutils
 LOCAL_CONDITIONAL_LIBRARIES := OPTIONAL:libulog
 include $(BUILD_LIBRARY)
 

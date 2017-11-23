@@ -53,6 +53,7 @@ extern "C" {
 /* Forward declarations */
 struct mux_ctx;
 struct mux_queue;
+struct mux_tcp_proxy;
 struct pomp_loop;
 struct pomp_buffer;
 
@@ -108,10 +109,20 @@ struct mux_ops {
 	 * Function called when a valid fd was given during creation and
 	 * an EOF condition or an error has been detected on the fd. The
 	 * mux context should be stopped and destroyed (by another thread).
-	 * @param ctx : mux  context.
+	 * @param ctx : mux context.
 	 * @param userdata : user data.
 	 */
 	void (*fdeof)(struct mux_ctx *ctx, void *userdata);
+
+	/**
+	 * Function called when the refcount of the mux_ctx reaches 0, to
+	 * allow cleanup of the userdata. The mux_ctx pointer should NOT be
+	 * used as an argument to any mux_xxx function, nor stored, as it will
+	 * be deleted right after this call.
+	 * @param ctx : mux context.
+	 * @param userdata : user data.
+	 */
+	void (*release)(struct mux_ctx *ctx, void *userdata);
 
 	/** Userdata to pass to operations */
 	void *userdata;
@@ -211,7 +222,7 @@ MUX_API int mux_decode(struct mux_ctx *ctx, struct pomp_buffer *buf);
  *
  * @param ctx : mux context.
  * @param hostname : hostname to be resolved.
- * @param addr : hostname ipv4 address.
+ * @param addr : hostname ipv4 address in host byte order.
  * @return 0 in case of success, negative errno value in case of error.
  */
 MUX_API int mux_add_host(struct mux_ctx *ctx, const char *hostname,
@@ -250,38 +261,6 @@ MUX_API int mux_channel_open(struct mux_ctx *ctx, uint32_t chanid,
  * @remarks safe to call from any thread if the internal loop is used.
  */
 MUX_API int mux_channel_close(struct mux_ctx *ctx, uint32_t chanid);
-
-/**
- * Open a channel for a remote tcp connection.
- * @param ctx : mux context.
- * @param remoteaddr : remote host to connect to (IPv4 quad-dotted format or
- * hostname).
- * @param remoteport : remote port to connect to.
- * @param localport : allocated local port for the connection.
- * @param localport : allocated channel id for the connection.
- * @return 0 in case of success, negative errno value in case of error.
- *
- * @remarks safe to call from any thread if the internal loop is used.
- */
-MUX_API int mux_channel_open_tcp(struct mux_ctx *ctx,
-		const char *remotehost, uint16_t remoteport,
-		uint16_t *localport, uint32_t *chanid);
-
-/**
- * Open a channel for a remote ftp connection.
- * @param ctx : mux context.
- * @param remoteaddr : remote host to connect to (IPv4 quad-dotted format or
- * hostname).
- * @param remoteport : remote port to connect to.
- * @param localport : allocated local port for the connection.
- * @param chanid : allocated channel id for the connection.
- * @return 0 in case of success, negative errno value in case of error.
- *
- * @remarks safe to call from any thread if the internal loop is used.
- */
-MUX_API int mux_channel_open_ftp(struct mux_ctx *ctx,
-		const char *remotehost, uint16_t remoteport,
-		uint16_t *localport, uint32_t *chanid);
 
 /**
  * Allocate a queue for a channel.
@@ -339,6 +318,36 @@ MUX_API int mux_queue_try_get_buf(struct mux_queue *queue,
 MUX_API int mux_queue_timed_get_buf(struct mux_queue *queue,
 				    struct pomp_buffer **buf,
 				    struct timespec *timeout);
+
+/**
+ * Create a new mux tcp proxy.
+ * @param ctx : mux context.
+ * @param remoteaddr : remote host to connect to (IPv4 quad-dotted format or
+ * hostname).
+ * @param remoteport : remote port to connect to.
+ * @param isftpctrl : 1 if the proxy will used to ftp otherwise 0.
+ * @param ret_obj: will receive the mux tcp proxy object.
+ * @return 0 in case of success, negative errno value in case of error.
+ *
+ * @remarks safe to call from any thread if the internal loop is used.
+ */
+MUX_API int mux_tcp_proxy_new(struct mux_ctx *ctx,
+		const char *remotehost, uint16_t remoteport, int isftpctrl,
+		struct mux_tcp_proxy **ret_obj);
+
+/**
+ * Destroy a mux tcp proxy.
+ * @param tcp_proxy: the mux tcp proxy to destroy.
+ * @return 0 in case of success, negative errno value in case of error.
+ */
+MUX_API int mux_tcp_proxy_destroy(struct mux_tcp_proxy *tcp_proxy);
+
+/**
+ * Get the local port of the mux tcp proxy.
+ * @param tcp_proxy: the mux tcp proxy.
+ * @return the port, negative errno value in case of error.
+ */
+MUX_API int mux_tcp_proxy_get_port(struct mux_tcp_proxy *tcp_proxy);
 
 #ifdef __cplusplus
 }

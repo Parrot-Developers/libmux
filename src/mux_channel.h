@@ -72,13 +72,12 @@ struct mux_channel {
 
 	union {
 		struct {
-			struct pomp_ctx		*ctx;
 			struct pomp_conn	*conn;
 			enum mux_tcp_state	state;
 			char			*remotehost;
 			uint16_t		remoteport;
 			int			isftpctrl;
-			struct mux_channel	*ftpdatachan;
+			struct mux_tcp_proxy	*ftpdataproxy;
 			int			waiting_ack;
 			uint32_t		tx_ack_bytes;
 		} tcpmaster;
@@ -98,6 +97,19 @@ struct mux_channel {
 
 /* Internal channel API */
 
+/**
+ * Open a channel for a remote tcp connection.
+ * @param ctx : mux context.
+ * @param remoteaddr : remote host to connect to (IPv4 quad-dotted format or
+ * hostname).
+ * @param remoteport : remote port to connect to.
+ * @return 0 in case of success, negative errno value in case of error.
+ *
+ * @remarks safe to call from any thread if the internal loop is used.
+ */
+int mux_channel_open_tcp(struct mux_ctx *ctx, const char *remotehost,
+		uint16_t remoteport, uint32_t *chanid);
+
 int mux_channel_recv_ctrl_msg(struct mux_ctx *ctx,
 		const struct mux_ctrl_msg *msg,
 		const void *payload,
@@ -106,5 +118,25 @@ int mux_channel_recv_ctrl_msg(struct mux_ctx *ctx,
 int mux_channel_stop(struct mux_channel *channel);
 
 int mux_channel_put_buf(struct mux_channel *channel, struct pomp_buffer *buf);
+
+/**
+ * Notify a mux tcp master channel of a pomp connection event.
+ * @param channel: the channel to notify.
+ * @param event: the pomp event.
+ * @param conn: the pomp connection.
+ */
+void mux_channel_tcpmaster_event(struct mux_channel *channel,
+		enum pomp_event event,
+		struct pomp_conn *conn);
+
+/**
+ * Notify a mux tcp master channel that the pomp connection received data.
+ * @param channel: the channel to notify.
+ * @param conn: the pomp connection.
+ * @param buf: the buffer data received.
+ */
+void mux_channel_tcpmaster_raw(struct mux_channel *channel,
+		struct pomp_conn *conn,
+		struct pomp_buffer *buf);
 
 #endif /* _MUX_CHANNEL_H_ */

@@ -36,6 +36,7 @@
 #define MUX_ARSDK_CHANNEL_ID_BACKEND          3
 #define MUX_ARSDK_CHANNEL_ID_STREAM_DATA      4
 #define MUX_ARSDK_CHANNEL_ID_STREAM_CONTROL   5
+#define MUX_ARSDK_CHANNEL_ID_RTP              6
 
 /*
  * Discover message. Request remote to send list of published devices
@@ -81,5 +82,23 @@
 #define MUX_ARSDK_MSG_ID_CONN_RESP            2
 #define MUX_ARSDK_MSG_FMT_ENC_CONN_RESP       "%d%s"
 #define MUX_ARSDK_MSG_FMT_DEC_CONN_RESP       "%d%ms"
+
+/*
+ * RTP Data message.
+ * arg1: %hu  : destination port.
+ * arg2: %p%u : rtp data.
+ */
+#define MUX_ARSDK_MSG_ID_RTP_DATA             1
+#define MUX_ARSDK_MSG_FMT_ENC_RTP_DATA        "%hu%p%u"
+#define MUX_ARSDK_MSG_FMT_DEC_RTP_DATA        "%hu%p%u"
+
+/*
+ * RTCP Data message.
+ * arg1: %hu  : destination port.
+ * arg2: %p%u : rtcp data.
+ */
+#define MUX_ARSDK_MSG_ID_RTCP_DATA            2
+#define MUX_ARSDK_MSG_FMT_ENC_RTCP_DATA       "%hu%p%u"
+#define MUX_ARSDK_MSG_FMT_DEC_RTCP_DATA       "%hu%p%u"
 
 #endif /* !_LIBMUX_ARSDK_H_ */

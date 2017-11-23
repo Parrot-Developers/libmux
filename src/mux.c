@@ -42,6 +42,17 @@
 /** Size of protocol header */
 #define MUX_PROT_HEADER_SIZE		12
 
+/**
+ * Determine if a read/write error in non-blocking could not be completed.
+ * POSIX.1-2001 allows either error to be returned for this case, and
+ * does not require these constants to have the same value, so a portable
+ * application should check for both possibilities. */
+#define MUX_WOULD_BLOCK(_err) \
+	( \
+		(_err) == EAGAIN || \
+		(_err) == EWOULDBLOCK \
+	)
+
 /** Protocol header */
 struct mux_prot_header {
 	uint8_t		magic[4];	/**< Magic */
@@ -498,7 +509,7 @@ static int do_fd_read(struct mux_ctx *ctx)
 		pomp_buffer_set_len(ctx->rx.buf, (uint32_t)readlen);
 	} else if (readlen == 0) {
 		ctx->eof = 1;
-	} else if (errno != EAGAIN && errno != EWOULDBLOCK) {
+	} else if (!MUX_WOULD_BLOCK(errno)) {
 		MUX_LOG_FD_ERR("read", ctx->fd, errno);
 		ctx->eof = 1;
 	}
@@ -528,7 +539,7 @@ static int do_fd_write_buf(struct mux_ctx *ctx,
 	/* Write data */
 	writelen = xwrite(ctx->fd, (const uint8_t *)cdata + *off, len - *off);
 	if (writelen < 0) {
-		if (errno == EAGAIN || errno == EWOULDBLOCK)
+		if (MUX_WOULD_BLOCK(errno))
 			return 0;
 
 		if (errno != EPIPE)
@@ -898,6 +909,10 @@ static void mux_destroy(struct mux_ctx *ctx)
 		free(host);
 		host = next;
 	}
+
+	/* Call release callback */
+	if (ctx->ops.release)
+		(*ctx->ops.release)(ctx, ctx->ops.userdata);
 
 	free(ctx);
 	MUX_LOGI("mux destroyed");
@@ -1333,7 +1348,7 @@ int mux_add_host(struct mux_ctx *ctx, const char *hostname, uint32_t addr)
 
 	/* update host info */
 	host->name = name;
-	host->addr = addr;
+	host->addr = htonl(addr);
 
 	ret = 0;
 out:
