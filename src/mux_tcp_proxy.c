@@ -131,7 +131,7 @@ static int open_channel(struct mux_tcp_proxy *tcp_proxy,
 
 	/* Cleanup in case of error */
 error:
-	mux_channel_close(tcp_proxy->mux_ctx, channel->chanid);
+	mux_channel_close(tcp_proxy->mux_ctx, chanid);
 	mux_loop_release(tcp_proxy->mux_ctx);
 	return res;
 }
