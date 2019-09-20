@@ -26,8 +26,6 @@
  *
  */
 
-#include <arpa/inet.h>
-#include <sys/ioctl.h>
 #include "mux_priv.h"
 
 #define MUX_CHANNEL_TCP_ACK_BYTES_INTL (1024 * 1024) /* 1 MB */
@@ -84,18 +82,19 @@ static void tcp_slave_queue_timer_cb(struct pomp_timer *timer, void *userdata)
 {
 	struct mux_channel *channel = userdata;
 	struct mux_ctrl_msg ctrl_msg;
-	int ret, pending;
+	int pending = 0;
 
 	if (!channel->tcpslave.ack_req) {
 		pomp_timer_clear(channel->tcpslave.queue_timer);
 		return;
 	}
 
-	ret = ioctl(channel->tcpslave.fd, TIOCOUTQ, &pending);
-	if (ret < 0) {
+#ifndef _WIN32
+	if (ioctl(channel->tcpslave.fd, TIOCOUTQ, &pending) < 0) {
 		MUX_LOGE("ioctl(TIOCOUTQ) error: %s", strerror(errno));
 		return;
 	}
+#endif /* !_WIN32 */
 
 	/* check if no bytes pending */
 	if (pending != 0)
@@ -1012,6 +1011,7 @@ int mux_channel_open_tcp(struct mux_ctx *ctx, const char *remotehost,
 		uint16_t remoteport, uint32_t *chanid)
 {
 	int res = 0;
+	uint16_t rnd = 0;
 	struct mux_channel *channel = NULL;
 
 	if (ctx == NULL || chanid == NULL ||
@@ -1021,7 +1021,12 @@ int mux_channel_open_tcp(struct mux_ctx *ctx, const char *remotehost,
 	mux_loop_acquire(ctx, 0);
 
 	/* Search a free channel */
-	*chanid = 1023 + random() % 65535;
+	res = futils_random16(&rnd);
+	if (res < 0) {
+		ULOG_ERRNO("futils_random16", -res);
+		goto error;
+	}
+	*chanid = 1023 + rnd;
 	do {
 		(*chanid)++;
 		channel = mux_find_channel(ctx, *chanid);

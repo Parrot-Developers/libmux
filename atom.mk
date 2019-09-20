@@ -12,6 +12,9 @@ LOCAL_SRC_FILES := \
 	src/mux_tcp_proxy.c
 LOCAL_LIBRARIES := libpomp libfutils
 LOCAL_CONDITIONAL_LIBRARIES := OPTIONAL:libulog
+ifeq ("$(TARGET_OS)","windows")
+  LOCAL_LDLIBS += -lws2_32
+endif
 include $(BUILD_LIBRARY)
 
 ifeq ("$(TARGET_OS)","linux")

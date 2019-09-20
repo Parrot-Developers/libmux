@@ -154,7 +154,7 @@ struct mux_ctx {
 	struct {
 		pthread_t		thread;
 		int			thread_created;
-		int			pipefds[2];
+		struct pomp_evt		*evt;
 		struct pomp_buffer	*buf;
 		struct mux_queue	*queue;
 	} rx;
@@ -694,16 +694,12 @@ static void fd_cb(int fd, uint32_t revents, void *userdata)
 }
 
 /**
- * Function call when the rx available pipe is ready for IN events.
+ * Function called when the rx available event is signaled.
  */
-static void rx_pipe_cb(int fd, uint32_t revents, void *userdata)
+static void rx_evt_cb(struct pomp_evt *evt, void *userdata)
 {
 	struct mux_ctx *ctx = userdata;
-	uint8_t dummy = 0;
 	struct pomp_buffer *buf;
-
-	/* Acknowledge pipe */
-	xread(ctx->rx.pipefds[0], &dummy, sizeof(dummy));
 
 	/* Get a new buffer, process it and release it */
 	while (mux_queue_try_get_buf(ctx->rx.queue, &buf) == 0) {
@@ -722,14 +718,13 @@ static void rx_pipe_cb(int fd, uint32_t revents, void *userdata)
 static void *rx_thread(void *userdata)
 {
 	struct mux_ctx *ctx = userdata;
-	uint8_t dummy = 0;
 
 	while (!ctx->stopped && !ctx->eof) {
 		if (do_fd_read(ctx))
 			mux_queue_put_buf(ctx->rx.queue, ctx->rx.buf);
 
-		/* Always write in pipe for eof notification */
-		xwrite(ctx->rx.pipefds[1], &dummy, sizeof(dummy));
+		/* Always signal rx event for eof notification */
+		pomp_evt_signal(ctx->rx.evt);
 	}
 
 	return NULL;
@@ -741,7 +736,6 @@ static void *rx_thread(void *userdata)
 static void *tx_thread(void *userdata)
 {
 	struct mux_ctx *ctx = userdata;
-	uint8_t dummy = 0;
 
 	while (!ctx->stopped && !ctx->eof) {
 		if (ctx->tx.buf == NULL)
@@ -749,9 +743,9 @@ static void *tx_thread(void *userdata)
 		do_fd_write(ctx);
 	}
 
-	/* Always write in pipe for eof notification */
+	/* Always signal rx event for eof notification */
 	if (ctx->eof)
-		xwrite(ctx->rx.pipefds[1], &dummy, sizeof(dummy));
+		pomp_evt_signal(ctx->rx.evt);
 
 	return NULL;
 }
@@ -762,6 +756,9 @@ static void *tx_thread(void *userdata)
  */
 static int setup_fd_pollable(struct mux_ctx *ctx)
 {
+#ifdef _WIN32
+	return -ENOSYS;
+#else /* !_WIN32 */
 	int res = 0;
 
 	/* Tx queue */
@@ -786,6 +783,7 @@ static int setup_fd_pollable(struct mux_ctx *ctx)
 	}
 
 	return 0;
+#endif /* !_WIN32 */
 }
 
 /**
@@ -800,18 +798,17 @@ static int setup_fd_not_pollable(struct mux_ctx *ctx)
 	if (ctx->rx.queue == NULL)
 		return -ENOMEM;
 
-	/* Rx available pipe */
-	if (pipe(ctx->rx.pipefds) < 0) {
-		res = -errno;
-		MUX_LOG_ERR("pipe", errno);
+	/* Rx available event */
+	ctx->rx.evt = pomp_evt_new();
+	if (ctx->rx.evt == NULL) {
+		res = -ENOMEM;
 		return res;
 	}
 
-	/* Register rx available read pipe for IN events */
-	res = pomp_loop_add(ctx->loop, ctx->rx.pipefds[0], POMP_FD_EVENT_IN,
-			&rx_pipe_cb, ctx);
+	/* Attach rx available event in loop */
+	res = pomp_evt_attach_to_loop(ctx->rx.evt, ctx->loop, &rx_evt_cb, ctx);
 	if (res < 0) {
-		MUX_LOG_ERR("pomp_loop_add", -res);
+		MUX_LOG_ERR("pomp_evt_attach_to_loop", -res);
 		return res;
 	}
 
@@ -868,6 +865,11 @@ static void mux_destroy(struct mux_ctx *ctx)
 	if (ctx->tx.thread_created)
 		pthread_join(ctx->tx.thread, NULL);
 
+	if (ctx->rx.evt != NULL) {
+		pomp_evt_detach_from_loop(ctx->rx.evt, ctx->loop);
+		pomp_evt_destroy(ctx->rx.evt);
+	}
+
 	if (ctx->loop != NULL) {
 		if (ctx->fd >= 0 && pomp_loop_has_fd(ctx->loop, ctx->fd))
 			pomp_loop_remove(ctx->loop, ctx->fd);
@@ -879,10 +881,6 @@ static void mux_destroy(struct mux_ctx *ctx)
 		pomp_buffer_unref(ctx->payloadbuf);
 
 	/* Clear rx */
-	if (ctx->rx.pipefds[0] >= 0)
-		close(ctx->rx.pipefds[0]);
-	if (ctx->rx.pipefds[1] >= 0)
-		close(ctx->rx.pipefds[1]);
 	if (ctx->rx.buf != NULL)
 		pomp_buffer_unref(ctx->rx.buf);
 	if (ctx->rx.queue != NULL)
@@ -946,8 +944,6 @@ struct mux_ctx *mux_new(int fd,
 	if (ops != NULL)
 		ctx->ops = *ops;
 	pthread_mutex_init(&ctx->mutex, NULL);
-	ctx->rx.pipefds[0] = -1;
-	ctx->rx.pipefds[1] = -1;
 
 	if (loop != NULL) {
 		ctx->loop = loop;
@@ -1065,8 +1061,8 @@ int mux_stop(struct mux_ctx *ctx)
 	if (ctx->tx.queue != NULL)
 		mux_queue_stop(ctx->tx.queue);
 
-	if (ctx->rx.pipefds[0] >= 0)
-		pomp_loop_remove(ctx->loop, ctx->rx.pipefds[0]);
+	if (ctx->rx.evt != NULL)
+		pomp_evt_detach_from_loop(ctx->rx.evt, ctx->loop);
 
 	/* Stop all channels */
 	channel = ctx->channels;

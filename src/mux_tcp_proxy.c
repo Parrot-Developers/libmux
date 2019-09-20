@@ -26,8 +26,6 @@
  *
  */
 
-#include <arpa/inet.h>
-#include <futils/hash.h>
 #include "mux_priv.h"
 
 /** Mux Tcp Proxy */

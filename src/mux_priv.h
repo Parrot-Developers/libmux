@@ -41,8 +41,15 @@
 #include <pthread.h>
 #include <fcntl.h>
 #include <unistd.h>
-#include <sys/socket.h>
-#include <netinet/in.h>
+
+#ifdef _WIN32
+# include <winsock2.h>
+#else /* !_WIN32 */
+#  include <sys/ioctl.h>
+#  include <sys/socket.h>
+#  include <arpa/inet.h>
+#  include <netinet/in.h>
+#endif /* !_WIN32 */
 
 #define POMP_ENABLE_ADVANCED_API
 #if defined(ALCHEMY_BUILD) || defined(ANDROID)
@@ -52,6 +59,9 @@
 #  include <libpomp/libpomp.h>
 #  include "libARNetworkALMux/libmux.h"
 #endif
+
+#include <futils/hash.h>
+#include <futils/random.h>
 
 /* Forward declarations */
 struct mux_ctrl_msg;
