@@ -1,5 +1,7 @@
 LOCAL_PATH := $(call my-dir)
 
+ifneq ($(CONFIG_ALCHEMY_BUILD_LIBMUX_LEGACY_CONFIG),y)
+
 include $(CLEAR_VARS)
 LOCAL_MODULE := libmux
 LOCAL_EXPORT_C_INCLUDES := $(LOCAL_PATH)/include/
@@ -9,7 +11,7 @@ LOCAL_SRC_FILES := \
 	src/mux_channel.c \
 	src/mux_log.c \
 	src/mux_queue.c \
-	src/mux_tcp_proxy.c
+	src/mux_ip_proxy.c
 LOCAL_LIBRARIES := libpomp libfutils
 LOCAL_CONDITIONAL_LIBRARIES := OPTIONAL:libulog
 ifeq ("$(TARGET_OS)","windows")
@@ -17,33 +19,29 @@ ifeq ("$(TARGET_OS)","windows")
 endif
 include $(BUILD_LIBRARY)
 
-ifeq ("$(TARGET_OS)","linux")
+###############################################################################
+###############################################################################
+
+ifdef TARGET_TEST
 
 include $(CLEAR_VARS)
-LOCAL_MODULE := mux-client
-LOCAL_SRC_FILES := tests/client.c
-LOCAL_LIBRARIES := \
-	libARSAL \
-	libARNetworkAL \
-	libARNetwork \
-	libARCommands \
-	libARUtils \
-	libpomp \
-	libmux \
-	libulog
+LOCAL_MODULE := tst-mux
+LOCAL_C_INCLUDES := $(LOCAL_PATH)/src
+
+LOCAL_SRC_FILES := \
+	tests/mux_test.c \
+	tests/mux_test_base.c \
+	tests/mux_test_basic.c \
+	tests/mux_test_ip_proxy.c
+
+LOCAL_LIBRARIES := libmux libcunit libpomp libfutils
+LOCAL_CONDITIONAL_LIBRARIES := OPTIONAL:libulog
+
+ifeq ("$(TARGET_OS)","windows")
+  LOCAL_LDLIBS += -lws2_32
+endif
+
 include $(BUILD_EXECUTABLE)
 
-include $(CLEAR_VARS)
-LOCAL_MODULE := mux-server
-LOCAL_SRC_FILES := tests/server.c
-LOCAL_LIBRARIES := \
-	libARSAL \
-	libARNetworkAL \
-	libARNetwork \
-	libARCommands \
-	libpomp \
-	libmux \
-	libulog
-include $(BUILD_EXECUTABLE)
-
+endif
 endif

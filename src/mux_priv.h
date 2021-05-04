@@ -31,6 +31,7 @@
 #ifndef _MUX_PRIV_H_
 #define _MUX_PRIV_H_
 
+#include <inttypes.h>
 #include <stdlib.h>
 #include <stdio.h>
 #include <string.h>
@@ -61,6 +62,7 @@
 #endif
 
 #include <futils/hash.h>
+#include <futils/list.h>
 #include <futils/random.h>
 
 /* Forward declarations */
@@ -68,6 +70,7 @@ struct mux_ctrl_msg;
 
 #include "mux_log.h"
 #include "mux_channel.h"
+#include "mux_ip_proxy_priv.h"
 
 /** Endianess detection */
 #if !defined(MUX_LITTLE_ENDIAN) && !defined(MUX_BIG_ENDIAN)
@@ -96,16 +99,44 @@ struct mux_ctrl_msg;
 
 #endif
 
+/**
+ * Mux messages.
+ *
+ * To ensure retrocompatibility:
+ * - Old messages should never be removed, changed or reused.
+ * - Core messages should always be functional and retrocompatible.
+ * - New messages should use a new identifier.
+ * - MUX_PROTOCOL_VERSION should be incremented each time a message is added or
+ *   modified.
+ */
 enum mux_ctrl_msg_id {
-	MUX_CTRL_MSG_ID_CHANNEL_OPEN,
-	MUX_CTRL_MSG_ID_CHANNEL_CLOSE,
-	MUX_CTRL_MSG_ID_CHANNEL_TCP_CONNECT,
-	MUX_CTRL_MSG_ID_CHANNEL_TCP_DISCONNECT,
-	MUX_CTRL_MSG_ID_CHANNEL_TCP_CONNECTED,
-	MUX_CTRL_MSG_ID_CHANNEL_TCP_DISCONNECTED,
-	MUX_CTRL_MSG_ID_RESET,
-	MUX_CTRL_MSG_ID_CHANNEL_TCP_REQ_ACK,
-	MUX_CTRL_MSG_ID_CHANNEL_TCP_ACK,
+	MUX_CTRL_MSG_ID_UNKNOWN = UINT32_MAX,
+	/** Core message. */
+	MUX_CTRL_MSG_ID_CHANNEL_OPEN = 0,
+	/** Core message. */
+	MUX_CTRL_MSG_ID_CHANNEL_CLOSE = 1,
+	MUX_CTRL_MSG_ID_CHANNEL_TCP_CONNECT, /**< Deprecated */
+	MUX_CTRL_MSG_ID_CHANNEL_TCP_DISCONNECT, /**< Deprecated */
+	MUX_CTRL_MSG_ID_CHANNEL_TCP_CONNECTED, /**< Deprecated */
+	MUX_CTRL_MSG_ID_CHANNEL_TCP_DISCONNECTED, /**< Deprecated */
+	/** Core message. */
+	MUX_CTRL_MSG_ID_RESET = 6,
+	MUX_CTRL_MSG_ID_CHANNEL_TCP_REQ_ACK, /**< Deprecated */
+	MUX_CTRL_MSG_ID_CHANNEL_TCP_ACK, /**< Deprecated */
+
+	MUX_CTRL_MSG_ID_PROXY_RESOLVE_REQ,
+	MUX_CTRL_MSG_ID_PROXY_RESOLVE_REQ_ACK,
+	MUX_CTRL_MSG_ID_PROXY_REMOTE_UPDATE_REQ,
+	MUX_CTRL_MSG_ID_PROXY_REMOTE_UPDATE_REQ_ACK,
+	MUX_CTRL_MSG_ID_CHANNEL_IP_CONNECT,
+	MUX_CTRL_MSG_ID_CHANNEL_IP_DISCONNECT,
+	MUX_CTRL_MSG_ID_CHANNEL_IP_CONNECTED,
+	MUX_CTRL_MSG_ID_CHANNEL_IP_DISCONNECTED,
+	MUX_CTRL_MSG_ID_CHANNEL_IP_REQ_ACK,
+	MUX_CTRL_MSG_ID_CHANNEL_IP_ACK,
+
+	/** Core message. */
+	MUX_CTRL_MSG_ID_HANDSHAKE = 127,
 };
 
 #define MUX_CTRL_MSG_MAX_ARG_COUNT	6
@@ -118,11 +149,34 @@ struct mux_ctrl_msg {
 
 struct mux_channel;
 
+/* Internal version API */
+
+/**
+ * Sets the remote protocol mux version.
+ *
+ * @param ctx : mux context.
+ * @param version : remote protocol version number.
+ *
+ * @return 0 in case of success, negative errno value in case of error.
+ */
+int mux_set_remote_version(struct mux_ctx *ctx, uint32_t version);
+
 /* Internal context API */
 
 int mux_loop_acquire(struct mux_ctx *ctx, int willblock);
 
 int mux_loop_release(struct mux_ctx *ctx);
+
+/**
+ * Send a handshake.
+ *
+ * @param ctx : mux context.
+ * @param is_ack : '1' if it is an acknowledgement of a handshake received,
+ *                 otherwise '0'.
+ *
+ * @return 0 in case of success, negative errno value in case of error.
+ */
+int mux_send_handshake(struct mux_ctx *ctx, int is_ack);
 
 int mux_send_ctrl_msg(struct mux_ctx *ctx, const struct mux_ctrl_msg *msg);
 
@@ -143,6 +197,13 @@ struct mux_channel *mux_remove_channels(struct mux_ctx *ctx);
 
 int mux_get_host_address(struct mux_ctx *ctx, const char *hostname,
 		uint32_t *addr);
+int mux_resolve_addr(struct mux_ctx *ctx, char *hostname, char **hostip);
+
+struct mux_ip_proxy *mux_ip_proxy_from_id(struct mux_ctx *ctx, uint32_t id);
+
+int mux_add_pending_resolve(struct mux_ctx *ctx, uint32_t proxy_id,
+		struct mux_ip_proxy_protocol *protocol,
+		const char *hostname, uint16_t port);
 
 /* Internal queue API */
 

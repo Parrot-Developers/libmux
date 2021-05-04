@@ -44,7 +44,7 @@
 
 /*
  * axis action notification.
- * arg1: %hhi : source (0 for app, 1 for skycontroller).
+ * arg1: %hhi : source (0 for skycontroller, 1 for app).
  * arg2: %hhi : roll axis value.
  * arg3: %hhi : pitch axis value.
  * arg4: %hhi : yaw axis value.

@@ -71,12 +71,21 @@ enum mux_prot_state {
 	MUX_PROT_STATE_PAYLOAD,		/**< Reading payload */
 };
 
-struct mux_host {
-	struct mux_host *next;
-	char *name;
-	uint32_t addr;
+/** Resolution Request. */
+struct mux_resolve_request {
+	/** Proxy identifier. */
+	uint32_t proxy_id;
+	/** Proxy protocol. */
+	struct mux_ip_proxy_protocol protocol;
+	/** Host name. */
+	char *hostname;
+	/** Host port. */
+	uint16_t hostport;
+	/** Node. */
+	struct list_node node;
 };
 
+/** Mux Context. */
 struct mux_ctx {
 	/** Reference count */
 	uint32_t		refcount;
@@ -145,11 +154,17 @@ struct mux_ctx {
 	/** List of opened channels */
 	struct mux_channel	*channels;
 
-	/** List of hosts */
-	struct mux_host		*hosts;
+	/** Pending host address resolutions */
+	struct list_node	pending_resolves;
 
 	/** Last channel id not opened on which we recv data **/
 	uint32_t		last_rcv_chanid_closed;
+
+	/** Ip proxys */
+	struct list_node	proxys;
+
+	/** Last proxy identifier. */
+	uint32_t		last_proxy_id;
 
 	struct {
 		pthread_t		thread;
@@ -166,6 +181,9 @@ struct mux_ctx {
 		size_t			off;
 		struct mux_queue	*queue;
 	} tx;
+
+	/** Protocol version of the remote mux; '0' for unknown version. */
+	uint32_t remote_version;
 };
 
 /**
@@ -841,8 +859,6 @@ static int setup_fd_not_pollable(struct mux_ctx *ctx)
  */
 static void mux_destroy(struct mux_ctx *ctx)
 {
-	struct mux_host *host, *next;
-
 	MUX_LOGI("destroying mux");
 	if (ctx->channels != NULL) {
 		MUX_LOGW("mux %p: some channels are still opened", ctx);
@@ -899,15 +915,6 @@ static void mux_destroy(struct mux_ctx *ctx)
 	}
 	pthread_mutex_destroy(&ctx->mutex);
 
-	/* destroy hosts */
-	host = ctx->hosts;
-	while (host) {
-		next = host->next;
-		free(host->name);
-		free(host);
-		host = next;
-	}
-
 	/* Call release callback */
 	if (ctx->ops.release)
 		(*ctx->ops.release)(ctx, ctx->ops.userdata);
@@ -925,6 +932,7 @@ struct mux_ctx *mux_new(int fd,
 		uint32_t flags)
 {
 	struct mux_ctx *ctx = NULL;
+	int res;
 
 	/* Optional operations */
 	if (fd >= 0 && (ops == NULL || ops->fdeof == NULL))
@@ -941,6 +949,8 @@ struct mux_ctx *mux_new(int fd,
 	ctx->refcount = 1;
 	ctx->fd = fd;
 	ctx->flags = flags;
+	list_init(&ctx->proxys);
+	list_init(&ctx->pending_resolves);
 	if (ops != NULL)
 		ctx->ops = *ops;
 	pthread_mutex_init(&ctx->mutex, NULL);
@@ -972,6 +982,11 @@ struct mux_ctx *mux_new(int fd,
 				goto error;
 		}
 	}
+
+	/* Send handshake message */
+	res = mux_send_handshake(ctx, 0);
+	if (res < 0)
+		MUX_LOG_ERR("mux_send_handshake", -res);
 
 	return ctx;
 
@@ -1036,6 +1051,14 @@ struct pomp_loop *mux_get_loop(struct mux_ctx *ctx)
 /*
  * See documentation in public header.
  */
+uint32_t mux_get_remote_version(struct mux_ctx *ctx)
+{
+	return ctx == NULL ? 0 : ctx->remote_version;
+}
+
+/*
+ * See documentation in public header.
+ */
 int mux_stop(struct mux_ctx *ctx)
 {
 	struct mux_channel *channel = NULL;
@@ -1071,12 +1094,12 @@ int mux_stop(struct mux_ctx *ctx)
 		channel = channel->next;
 	}
 
-	/* Automatically close tcp slave channels (save next first because
+	/* Automatically close ip slave channels (save next first because
 	 * channel might be destroyed in the loop) */
 	channel = ctx->channels;
 	while (channel != NULL) {
 		next = channel->next;
-		if (channel->type == MUX_CHANNEL_TYPE_TCP_SLAVE)
+		if (channel->type == MUX_CHANNEL_TYPE_IP_SLAVE)
 			mux_channel_close(ctx, channel->chanid);
 		channel = next;
 	}
@@ -1237,24 +1260,15 @@ int mux_get_host_address(struct mux_ctx *ctx, const char *hostname,
 		uint32_t *addr)
 {
 	int ret;
-	struct mux_host *host;
 
 	if (!ctx || !hostname || !addr)
 		return -EINVAL;
 
 	pthread_mutex_lock(&ctx->mutex);
 
-	/* Search in list */
-	host = ctx->hosts;
-	while (host) {
-		if (!strcmp(host->name, hostname))
-			break;
-		host = host->next;
-	}
-
-	if (host) {
-		*addr = host->addr;
-		ret = 0;
+	if (ctx->ops.resolve != NULL) {
+		ret = (*ctx->ops.resolve)(ctx, hostname, addr,
+				ctx->ops.userdata);
 	} else {
 		ret = -ENOENT;
 	}
@@ -1263,96 +1277,107 @@ int mux_get_host_address(struct mux_ctx *ctx, const char *hostname,
 	return ret;
 }
 
-/**
- */
-int mux_remove_host(struct mux_ctx *ctx, const char *hostname)
+static int mux_resolve_req_new(struct mux_ctx *ctx, uint32_t proxy_id,
+		struct mux_ip_proxy_protocol *protocol,
+		const char *hostname, uint16_t port,
+		struct mux_resolve_request **ret_req)
 {
-	int ret = -ENOENT;
-	struct mux_host *host, *prev;
+	struct mux_resolve_request *req = NULL;
 
-	if (!ctx || !hostname)
+	if (ctx == NULL ||
+	    hostname == NULL)
 		return -EINVAL;
 
-	pthread_mutex_lock(&ctx->mutex);
+	req = calloc(1, sizeof(*req));
+	if (req == NULL)
+		return -ENOMEM;
 
-	/* Search in list */
-	host = ctx->hosts;
-	prev = NULL;
-	while (host) {
-		if (!strcmp(host->name, hostname)) {
-			/* remove it from list */
-			if (prev)
-				prev->next = host->next;
-			else
-				ctx->hosts = host->next;
-
-			/* release memory */
-			free(host->name);
-			free(host);
-			ret = 0;
-			break;
-		}
-		prev = host;
-		host = host->next;
+	req->hostname = strdup(hostname);
+	if (req->hostname  == NULL) {
+		free(req);
+		return -ENOMEM;
 	}
+	req->proxy_id = proxy_id;
+	req->protocol = *protocol;
+	req->hostport = port;
 
-	pthread_mutex_unlock(&ctx->mutex);
-	return ret;
+	*ret_req = req;
+	return 0;
+}
+
+static int mux_resolve_req_destroy(struct mux_ctx *ctx,
+		struct mux_resolve_request *req)
+{
+	if (ctx == NULL ||
+	    req == NULL)
+		return -EINVAL;
+
+	free(req->hostname);
+	free(req);
+	return 0;
+}
+
+int mux_add_pending_resolve(struct mux_ctx *ctx, uint32_t proxy_id,
+		struct mux_ip_proxy_protocol *protocol,
+		const char *hostname, uint16_t port) {
+	int res = 0;
+	struct mux_resolve_request *req = NULL;
+
+	if (ctx == NULL ||
+	    protocol == NULL ||
+	    hostname == NULL)
+		return -EINVAL;
+
+	res = mux_resolve_req_new(ctx, proxy_id, protocol, hostname, port,
+			&req);
+	if (res < 0)
+		return res;
+
+	mux_loop_acquire(ctx, 0);
+
+	/* Add request to the list */
+	list_add_before(&ctx->pending_resolves, &req->node);
+
+	mux_loop_release(ctx);
+
+	return 0;
 }
 
 /**
  */
-int mux_add_host(struct mux_ctx *ctx, const char *hostname, uint32_t addr)
+int mux_resolve(struct mux_ctx *ctx, const char *hostname,
+		uint32_t hostaddr)
 {
-	int ret;
-	struct mux_host *host;
-	char *name;
+	int res = 0;
+	struct mux_resolve_request *req = NULL;
+	struct mux_resolve_request *req_tmp = NULL;
 
-	if (!ctx || !hostname)
+	if (ctx == NULL || hostname == NULL)
 		return -EINVAL;
 
-	pthread_mutex_lock(&ctx->mutex);
+	mux_loop_acquire(ctx, 0);
 
-	/* Search in list */
-	host = ctx->hosts;
-	while (host) {
-		if (!strcmp(host->name, hostname))
-			break;
-		host = host->next;
+	/* Search hostname in pending resolutions. */
+	list_walk_entry_forward_safe(&ctx->pending_resolves,
+			req, req_tmp, node) {
+		if (strcmp(hostname, req->hostname))
+			continue;
+
+		/* Send resolve ack */
+		res = mux_send_proxy_ip_resolve_ack(ctx, req->proxy_id,
+				&req->protocol,
+				hostname, hostaddr, req->hostport);
+		if (res < 0)
+			MUX_LOG_ERR("mux_send_proxy_ip_resolve_ack", -res);
+
+		/* remove request from list */
+		list_del(&req->node);
+		mux_resolve_req_destroy(ctx, req);
 	}
 
-	/* copy hostname */
-	name = strdup(hostname);
-	if (!name) {
-		ret = -ENOMEM;
-		goto out;
-	}
+	mux_loop_release(ctx);
 
-	/* create host if not exist */
-	if (!host) {
-		host = calloc(1, sizeof(struct mux_host));
-		if (!host) {
-			ret = -ENOMEM;
-			goto out;
-		}
-		host->next = ctx->hosts;
-		ctx->hosts = host;
-	} else {
-		/* free previous host name */
-		free(host->name);
-	}
-
-	/* update host info */
-	host->name = name;
-	host->addr = htonl(addr);
-
-	ret = 0;
-out:
-	pthread_mutex_unlock(&ctx->mutex);
-	if (ret != 0)
-		free(name);
-
-	return ret;
+	return 0;
 }
 
 /**
@@ -1582,11 +1607,13 @@ int mux_send_ctrl_msg(struct mux_ctx *ctx, const struct mux_ctrl_msg *msg)
 {
 	return mux_send_ctrl_msg_with_payload(ctx, msg, NULL, 0);
 }
+
 /**
  */
 int mux_send_ctrl_msg_with_payload(struct mux_ctx *ctx,
-		const struct mux_ctrl_msg *msg, const void *payload,
-		size_t payload_size)
+				   const struct mux_ctrl_msg *msg,
+				   const void *payload,
+				   size_t payload_size)
 {
 	int res = 0;
 	struct pomp_buffer *buf = NULL;
@@ -1644,6 +1671,18 @@ out:
 
 /**
  */
+int mux_send_handshake(struct mux_ctx *ctx, int is_ack)
+{
+	struct mux_ctrl_msg version_msg = {
+		.id = MUX_CTRL_MSG_ID_HANDSHAKE,
+	};
+	version_msg.args[0] = is_ack;
+	version_msg.args[1] = MUX_PROTOCOL_VERSION;
+	return mux_send_ctrl_msg_with_payload(ctx, &version_msg, NULL, 0);
+}
+
+/**
+ */
 int mux_notify_buf(struct mux_ctx *ctx, uint32_t chanid,
 		struct pomp_buffer *buf)
 {
@@ -1654,5 +1693,252 @@ int mux_notify_buf(struct mux_ctx *ctx, uint32_t chanid,
 	else
 		(*ctx->ops.chan_cb)(ctx, chanid, MUX_CHANNEL_DATA, buf,
 				    ctx->ops.userdata);
+	return 0;
+}
+
+int mux_ip_proxy_new(struct mux_ctx *ctx, struct mux_ip_proxy_info *info,
+		struct mux_ip_proxy_cbs *cbs, int timeout,
+		struct mux_ip_proxy **ret_obj)
+{
+	int res = 0;
+	struct mux_ip_proxy *ip_proxy;
+	size_t remotehost_len = 0;
+	struct mux_ctrl_msg msg = {
+		.id = MUX_CTRL_MSG_ID_PROXY_RESOLVE_REQ,
+	};
+
+	if (ctx == NULL || ret_obj == NULL ||
+	    info == NULL || info->remote_host == NULL ||
+	    cbs == NULL || cbs->open == NULL || cbs->close == NULL)
+		return -EINVAL;
+
+	if (info->protocol.application == MUX_IP_PROXY_APPLICATION_FTP &&
+	    info->protocol.transport != MUX_IP_PROXY_TRANSPORT_TCP)
+		return -EINVAL;
+
+	ip_proxy = calloc(1, sizeof(*ip_proxy));
+	if (ip_proxy == NULL)
+		return -ENOMEM;
+
+	list_add_before(&ctx->proxys, &ip_proxy->node);
+
+	mux_loop_acquire(ctx, 0);
+
+	ip_proxy->mux_ctx = ctx;
+	mux_ref(ctx);
+
+	ip_proxy->ploop = mux_get_loop(ctx);
+	ip_proxy->protocol = info->protocol;
+	ip_proxy->cbs = *cbs;
+	ip_proxy->id = ctx->last_proxy_id++;
+	ip_proxy->req.id = MUX_CTRL_MSG_ID_UNKNOWN;
+	ip_proxy->remote.port = info->remote_port;
+	ip_proxy->remote.host = strdup(info->remote_host);
+	if (ip_proxy->remote.host == NULL) {
+		res = -ENOMEM;
+		goto error;
+	}
+
+	if (ip_proxy->protocol.transport == MUX_IP_PROXY_TRANSPORT_UDP) {
+		res = mux_ip_proxy_set_udp_redirect_port(ip_proxy,
+				info->udp_redirect_port);
+		if (res < 0)
+			goto error;
+	}
+
+	res = hash_init(&ip_proxy->tcp_conn_to_chann, 0);
+	if (res < 0)
+		goto error;
+
+	/* Initilize pending request */
+	res = mux_ip_init_pending_resolve_req(ip_proxy,
+			ip_proxy->remote.host, timeout);
+	if (res < 0)
+		goto error;
+
+	/* Ask address resolution by the mux peer. */
+	msg.args[0] = ip_proxy->id;
+	msg.args[1] = ip_proxy->protocol.transport;
+	msg.args[2] = ip_proxy->protocol.application;
+	msg.args[3] = ip_proxy->remote.port;
+	remotehost_len = strlen(ip_proxy->remote.host) + 1;
+	res = mux_send_ctrl_msg_with_payload(ctx, &msg, ip_proxy->remote.host,
+			remotehost_len);
+	if (res < 0)
+		goto error;
+
+	mux_loop_release(ctx);
+
+	*ret_obj = ip_proxy;
+	return 0;
+
+	/* Cleanup in case of error */
+error:
+	mux_ip_proxy_destroy(ip_proxy);
+	mux_loop_release(ctx);
+	return res;
+}
+
+int mux_ip_proxy_destroy(struct mux_ip_proxy *ip_proxy)
+{
+	size_t len;
+
+	if (ip_proxy == NULL)
+		return -EINVAL;
+
+	mux_loop_acquire(ip_proxy->mux_ctx, 0);
+
+	mux_ip_proxy_close(ip_proxy);
+
+	len = list_length(&ip_proxy->tcp_conn_to_chann.entries);
+	if (len != 0)
+		MUX_LOGW("connection to channel hash table not empty");
+
+	hash_destroy(&ip_proxy->tcp_conn_to_chann);
+
+	mux_ip_clear_pending_req(ip_proxy);
+
+	mux_loop_release(ip_proxy->mux_ctx);
+	list_del(&ip_proxy->node);
+
+	mux_unref(ip_proxy->mux_ctx);
+	free(ip_proxy->remote.host);
+	free(ip_proxy);
+	return 0;
+}
+
+struct mux_ip_proxy *mux_ip_proxy_from_id(struct mux_ctx *self, uint32_t id)
+{
+	struct mux_ip_proxy *proxy = NULL;
+
+	if (self == NULL)
+		return NULL;
+
+	list_walk_entry_forward(&self->proxys, proxy, node) {
+		if (proxy->id == id)
+			return proxy;
+	}
+
+	return NULL;
+}
+
+int mux_ip_proxy_get_local_info(struct mux_ip_proxy *self,
+		struct mux_ip_proxy_protocol *protocol, uint16_t *localport)
+{
+	if (self == NULL)
+		return -EINVAL;
+
+	if (protocol != NULL)
+		*protocol = self->protocol;
+
+	if (localport != NULL)
+		*localport = self->localport;
+
+	return 0;
+}
+
+uint16_t mux_ip_proxy_get_peerport(struct mux_ip_proxy *self)
+{
+	return (self != NULL) ? self->peerport : 0;
+}
+
+int mux_ip_proxy_set_udp_remote(struct mux_ip_proxy *self,
+		const char *remote_host, uint16_t remote_port, int timeout)
+{
+	struct mux_ctrl_msg msg = {
+		.id = MUX_CTRL_MSG_ID_PROXY_RESOLVE_REQ,
+	};
+	int res;
+	size_t remotehost_len;
+	char *old_host = NULL;
+
+	if (self == NULL || remote_host == NULL ||
+	    self->protocol.transport != MUX_IP_PROXY_TRANSPORT_UDP)
+		return -EINVAL;
+
+	mux_loop_acquire(self->mux_ctx, 0);
+
+	if (self->udp.channel == NULL) {
+		res = -EINVAL;
+		goto end;
+	}
+
+	if (self->req.id != MUX_CTRL_MSG_ID_UNKNOWN) {
+		/* Busy. */
+		res = -EBUSY;
+		goto end;
+	}
+
+	if (strcmp(remote_host, self->remote.host) == 0 &&
+	    remote_port == self->remote.port) {
+		/* Already connected to this remote. */
+		res = -EALREADY;
+		goto end;
+	}
+
+	/* Update remote addresse */
+	old_host = self->remote.host;
+	self->remote.host = strdup(remote_host);
+	if (self->remote.host == NULL) {
+		self->remote.host = old_host;
+		res = -ENOMEM;
+		goto end;
+	}
+	free(old_host);
+	self->remote.addr = 0;
+	self->remote.port = remote_port;
+
+	/* Initilize pending request */
+	res = mux_ip_init_pending_resolve_req(self,
+			self->remote.host, timeout);
+	if (res < 0)
+		goto end;
+
+	/* Ask the mux peer to resolve the address. */
+	msg.chanid = self->udp.channel->chanid;
+	msg.args[0] = self->id;
+	msg.args[1] = self->protocol.transport;
+	msg.args[2] = self->protocol.application;
+	msg.args[3] = remote_port;
+	remotehost_len = strlen(self->remote.host) + 1;
+	res = mux_send_ctrl_msg_with_payload(self->mux_ctx, &msg,
+			self->remote.host, remotehost_len);
+
+end:
+	mux_loop_release(self->mux_ctx);
+	return res;
+}
+
+int mux_ip_proxy_set_udp_redirect_port(struct mux_ip_proxy *self,
+		uint16_t redirect_port)
+{
+	struct sockaddr_in *addr;
+
+	if (self == NULL ||
+	    self->protocol.transport != MUX_IP_PROXY_TRANSPORT_UDP)
+		return -EINVAL;
+
+	mux_loop_acquire(self->mux_ctx, 0);
+
+	self->udp.redirect_port = redirect_port;
+
+	/* Setup address */
+	addr = (struct sockaddr_in *)&self->udp.addr;
+	addr->sin_family = AF_INET;
+	addr->sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+	addr->sin_port = htons(redirect_port);
+	self->udp.addrlen = sizeof(*addr);
+
+	mux_loop_release(self->mux_ctx);
+
+	return 0;
+}
+
+int mux_set_remote_version(struct mux_ctx *ctx, uint32_t version)
+{
+	if (ctx == NULL)
+		return -EINVAL;
+
+	ctx->remote_version = version;
 	return 0;
 }

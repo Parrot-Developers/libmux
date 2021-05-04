@@ -50,10 +50,14 @@ extern "C" {
 #  define MUX_API
 #endif /* !MUX_API_EXPORTS */
 
+/** Mux protocol version */
+#define MUX_PROTOCOL_VERSION 2
+
 /* Forward declarations */
 struct mux_ctx;
 struct mux_queue;
-struct mux_tcp_proxy;
+struct mux_ip_proxy_protocol;
+struct mux_ip_proxy;
 struct pomp_loop;
 struct pomp_buffer;
 
@@ -67,11 +71,70 @@ enum mux_channel_event {
 	MUX_CHANNEL_DATA,
 };
 
+/** Transport layer protocol. */
+enum mux_ip_proxy_transport {
+
+	/**
+	 * TCP protocol.
+	 *
+	 * Allows several connections.
+	 */
+	MUX_IP_PROXY_TRANSPORT_TCP,
+
+	/**
+	 * UDP protocol.
+	 *
+	 * Allows unique connection.
+	 */
+	MUX_IP_PROXY_TRANSPORT_UDP,
+};
+
+/** Application layer protocol. */
+enum mux_ip_proxy_application {
+
+	/** No specific application protocol. */
+	MUX_IP_PROXY_APPLICATION_NONE,
+
+	/**
+	 * FTP protocol.
+	 *
+	 * Decodes ftp EPSV messages to replace the port by its own one.
+	 *
+	 * The transport layer protocol MUST be MUX_IP_PROXY_TRANSPORT_TCP.
+	 */
+	MUX_IP_PROXY_APPLICATION_FTP,
+};
+
+/** Internet protocol suite layers. */
+struct mux_ip_proxy_protocol {
+	/** Transport protocol. */
+	enum mux_ip_proxy_transport transport;
+	/** Application protocol. */
+	enum mux_ip_proxy_application application;
+};
+
+/* IP proxy info. */
+struct mux_ip_proxy_info {
+	/** Proxy protocol to use for the IP proxy. */
+	struct mux_ip_proxy_protocol protocol;
+	/** Remote host to connect to (IPv4 quad-dotted format or hostname).*/
+	const char      *remote_host;
+	/** Remote port to connect to. */
+	uint16_t        remote_port;
+	/**
+	 * UDP local port where to redirect data received from the remote.
+	 * Only used if 'protocol.transport' is 'MUX_PROTOCOL_TRANSPORT_UDP'.
+	 * If equal to '0', received data will be lost.
+	 */
+	uint16_t        udp_redirect_port;
+};
+
 /**
  * Function called by mux_decode with demuxed data (unless a queue has
  * been allocated for the channel in which case mux_queue_get_buf
  * shall be called by another thread to get next buffer).
- * @param ctx : mux  context.
+ *
+ * @param ctx : mux context.
  * @param chanid : channel Id associated with data.
  * @param event : channel event.
  * @param buf : buffer with data (NULL if event is not MUX_CHANNEL_DATA).
@@ -83,10 +146,56 @@ typedef void (*mux_channel_cb_t)(struct mux_ctx *ctx,
 		struct pomp_buffer *buf,
 		void *userdata);
 
+/**
+ * IP Proxy event callbacks.
+ */
+struct mux_ip_proxy_cbs {
+	/**
+	 * Function called when the local socket is opened.
+	 *
+	 * @param self : Proxy object.
+	 * @param localport : Proxy local socket port.
+	 * @param userdata : User data.
+	 */
+	void (*open)(struct mux_ip_proxy *self, uint16_t localport,
+			void *userdata);
+
+	/**
+	 * Function called when the local socket is closed.
+	 *
+	 * @param self : Proxy object.
+	 * @param localport : Proxy local socket port.
+	 * @param userdata : User data.
+	 */
+	void (*close)(struct mux_ip_proxy *self, void *userdata);
+
+	/**
+	 * Function called when the remote is updated.
+	 *
+	 * @param self : Proxy object.
+	 * @param userdata : User data.
+	 */
+	void (*remote_update)(struct mux_ip_proxy *self, void *userdata);
+
+	/**
+	 * Function called if host address resolution fails.
+	 *
+	 * @param self : Proxy object.
+	 * @param err : negative errno value.
+	 * @param userdata : User data.
+	 */
+	void (*resolution_failed)(struct mux_ip_proxy *self, int err,
+			void *userdata);
+
+	/** User data given in callbacks. */
+	void *userdata;
+};
+
 /** */
 struct mux_ops {
 	/**
-	 * Function called by mux_encode with muxed data
+	 * Function called by mux_encode with muxed data.
+	 *
 	 * @param ctx : mux  context.
 	 * @param buf : buffer to write.
 	 * @param userdata : user data.
@@ -123,6 +232,22 @@ struct mux_ops {
 	 * @param userdata : user data.
 	 */
 	void (*release)(struct mux_ctx *ctx, void *userdata);
+
+	/**
+	 * Function called to resolve host name address.
+	 *
+	 * @param ctx : mux context.
+	 * @param hostname : host name to resolve.
+	 * @param addr[out] : address associated to the host name.
+	 *        'INADDR_ANY' in case of asynchronous resolution,
+	 *         use 'mux_resolve' to signal the resolution end.
+	 *        'INADDR_NONE' in case of no resolution.
+	 * @param userdata : user data.
+	 *
+	 * @return 0 in case of success, negative errno value in case of error.
+	 */
+	int (*resolve)(struct mux_ctx *ctx, const char *hostname,
+			uint32_t *addr, void *userdata);
 
 	/** Userdata to pass to operations */
 	void *userdata;
@@ -168,6 +293,16 @@ MUX_API void mux_unref(struct mux_ctx *ctx);
  * @param associated loop.
  */
 MUX_API struct pomp_loop *mux_get_loop(struct mux_ctx *ctx);
+
+/**
+ * Retrives the remote mux protocol version.
+ *
+ * Set at the first channel opening.
+ *
+ * @param ctx : mux context.
+ * @return remote mux protocol version, '0' if unknown.
+ */
+MUX_API uint32_t mux_get_remote_version(struct mux_ctx *ctx);
 
 /**
  * Stop a mux context. Shall be called prior to destroy the context. After this
@@ -218,29 +353,20 @@ MUX_API int mux_encode(struct mux_ctx *ctx, uint32_t chanid,
 MUX_API int mux_decode(struct mux_ctx *ctx, struct pomp_buffer *buf);
 
 /**
- * add host to be resolved by libmux tcp connection
+ * Sets an ip address for a hostname pending a resolution.
  *
  * @param ctx : mux context.
  * @param hostname : hostname to be resolved.
- * @param addr : hostname ipv4 address in host byte order.
+ * @param addr : hostname ipv4 address in network byte order.
  * @return 0 in case of success, negative errno value in case of error.
  */
-MUX_API int mux_add_host(struct mux_ctx *ctx, const char *hostname,
+MUX_API int mux_resolve(struct mux_ctx *ctx, const char *hostname,
 		uint32_t addr);
-
-/**
- * remove host to be resolved by libmux tcp connection
- *
- * @param ctx : mux context.
- * @param hostname : hostname to be resolved.
- * @return 0 in case of success, negative errno value in case of error.
- */
-MUX_API int mux_remove_host(struct mux_ctx *ctx, const char *hostname);
 
 /**
  * Open a channel.
  * @param ctx : mux context.
- * @param chanid : id of channel to open.
+ * @param chanid : id of channel to open, in range [1, 1023].
  * @param cb : function to call when data are received for the given channel.
  * Can be NULL in which case the generic rx operation of the mux context will
  * be used.
@@ -320,34 +446,117 @@ MUX_API int mux_queue_timed_get_buf(struct mux_queue *queue,
 				    struct timespec *timeout);
 
 /**
- * Create a new mux tcp proxy.
+ * Create a new mux ip proxy.
+ *
  * @param ctx : mux context.
- * @param remoteaddr : remote host to connect to (IPv4 quad-dotted format or
- * hostname).
- * @param remoteport : remote port to connect to.
- * @param isftpctrl : 1 if the proxy will used to ftp otherwise 0.
- * @param ret_obj: will receive the mux tcp proxy object.
+ * @param info : IP proxy connection information.
+ * @param cbs : proxy event callbacks.
+ * @param timeout : maximum opening wait time (in ms) or -1 for infinite wait.
+ * @param ret_obj: will receive the mux ip proxy object.
+ *
  * @return 0 in case of success, negative errno value in case of error.
  *
  * @remarks safe to call from any thread if the internal loop is used.
  */
-MUX_API int mux_tcp_proxy_new(struct mux_ctx *ctx,
-		const char *remotehost, uint16_t remoteport, int isftpctrl,
-		struct mux_tcp_proxy **ret_obj);
+MUX_API int mux_ip_proxy_new(struct mux_ctx *ctx,
+		struct mux_ip_proxy_info *info, struct mux_ip_proxy_cbs *cbs,
+		int timeout, struct mux_ip_proxy **ret_obj);
 
 /**
- * Destroy a mux tcp proxy.
- * @param tcp_proxy: the mux tcp proxy to destroy.
+ * Destroy a mux ip proxy.
+ *
+ * @param ip_proxy: the mux ip proxy to destroy.
+ *
  * @return 0 in case of success, negative errno value in case of error.
  */
-MUX_API int mux_tcp_proxy_destroy(struct mux_tcp_proxy *tcp_proxy);
+MUX_API int mux_ip_proxy_destroy(struct mux_ip_proxy *ip_proxy);
 
 /**
- * Get the local port of the mux tcp proxy.
- * @param tcp_proxy: the mux tcp proxy.
- * @return the port, negative errno value in case of error.
+ * Retrieves the proxy local socket ip info.
+ *
+ * @param self : the ip proxy.
+ * @param protocol[out] : ip protocol of the local socket.
+ * @param localport[out] : port of the local socket or
+ *			   '0' if the socket is no oppend.
+ *
+ * @return 0 in case of success, negative errno value in case of error.
  */
-MUX_API int mux_tcp_proxy_get_port(struct mux_tcp_proxy *tcp_proxy);
+MUX_API int mux_ip_proxy_get_local_info(struct mux_ip_proxy *self,
+		struct mux_ip_proxy_protocol *protocol, uint16_t *localport);
+
+/**
+ * Retrieves the port used by the peer to communicate with the remote.
+ *
+ * @param self : the ip proxy.
+ *
+ * @return the proxy peer port or '0' if 'ip_proxy' is 'NULL' or
+ *	   if the peer if not connected to the remote.
+ */
+MUX_API uint16_t mux_ip_proxy_get_peerport(struct mux_ip_proxy *self);
+
+/**
+ * Sets the remote to connect.
+ *
+ * Fails if the ip proxy transport protocol is not 'MUX_PROTOCOL_TRANSPORT_UDP'.
+ * Fails if the ip proxy is not opened.
+ *
+ * @param self : The ip proxy.
+ * @param remote_host : Remote host to connect to
+ *			(IPv4 quad-dotted format or hostname).
+ * @param remote_port : Remote port to connect to.
+ * @param timeout : timeout in ms or -1 for infinite wait.
+ *
+ * @return 0 in case of success, negative errno value in case of error.
+ *
+ * Calls 'mux_ip_proxy_cbs.remote_update' when the remote is upated or
+ * 'mux_ip_proxy_cbs.resolution_failed' if the address resolution failed.
+ */
+MUX_API int mux_ip_proxy_set_udp_remote(struct mux_ip_proxy *self,
+		const char *remote_host, uint16_t remote_port, int timeout);
+
+/**
+ * Sets the local redirect port to retreive data from the proxy.
+ *
+ * Fails if the ip proxy transport protocol is not 'MUX_PROTOCOL_TRANSPORT_UDP'.
+ *
+ * @param self : The ip proxy.
+ * @param remoteport : UDP local port where to redirect data received
+ *		from the remote.
+ *		If equal to `0`, redirect port will be the first local port
+ *		which will send data to the proxy socket, before that,
+ *		any received data will be lost.
+ *
+ * @return 0 in case of success, negative errno value in case of error.
+ */
+MUX_API int mux_ip_proxy_set_udp_redirect_port(struct mux_ip_proxy *self,
+		uint16_t redirect_port);
+
+/**
+ * Retreives the ip proxy remote host name.
+ *
+ * @param self : The proxy.
+ *
+ * @return ip proxy remote host name or 'NULL' in case of error.
+ */
+MUX_API const char *mux_ip_proxy_get_remote_host(struct mux_ip_proxy *self);
+
+/**
+ * Retreives the ip proxy remote port.
+ *
+ * @param self : The proxy.
+ *
+ * @return ip proxy remote port or `0` in case of error.
+ */
+MUX_API uint16_t mux_ip_proxy_get_remote_port(struct mux_ip_proxy *self);
+
+/**
+ * Retreives the ip proxy remote address.
+ *
+ * @param self : The proxy.
+ *
+ * @return remote address in network byte order.
+ */
+MUX_API uint32_t mux_ip_proxy_get_remote_addr(struct mux_ip_proxy *self);
 
 #ifdef __cplusplus
 }
