@@ -26,8 +26,6 @@
  *
  */
 
-#include <arpa/inet.h>
-#include <futils/hash.h>
 #include "mux_priv.h"
 
 static int get_chann(struct mux_ip_proxy *self,

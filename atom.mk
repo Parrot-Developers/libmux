@@ -1,10 +1,12 @@
 LOCAL_PATH := $(call my-dir)
 
-ifneq ($(CONFIG_ALCHEMY_BUILD_LIBMUX_LEGACY_CONFIG),y)
-
 include $(CLEAR_VARS)
 LOCAL_MODULE := libmux
 LOCAL_EXPORT_C_INCLUDES := $(LOCAL_PATH)/include/
+# Public API headers - top level headers first
+# This header list is currently used to generate a python binding
+LOCAL_EXPORT_CUSTOM_VARIABLES := LIBMUX_HEADERS=$\
+	$(LOCAL_PATH)/include/libmux.h:$(LOCAL_PATH)/include/libmux-arsdk.h;
 LOCAL_CFLAGS := -DMUX_API_EXPORTS -fvisibility=hidden
 LOCAL_SRC_FILES := \
 	src/mux.c \
@@ -43,5 +45,4 @@ endif
 
 include $(BUILD_EXECUTABLE)
 
-endif
 endif

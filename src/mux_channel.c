@@ -285,7 +285,7 @@ static int mux_channel_close_internal(struct mux_channel *channel,
 		int do_destroy)
 {
 	struct mux_ctrl_msg ctrl_msg;
-	MUX_LOGD("Closing channel 0x%08x", channel->chanid);
+	MUX_LOGI("Closing channel 0x%08x", channel->chanid);
 
 	/* Stop it if needed */
 	if (!channel->stopped)

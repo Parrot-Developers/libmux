@@ -243,7 +243,7 @@ static int mux_queue_get_buf_internal(struct mux_queue *queue,
 #endif
 		abs_timeout.tv_sec += timeout->tv_sec;
 		abs_timeout.tv_nsec += timeout->tv_nsec;
-		while (abs_timeout.tv_nsec > 1000000000) {
+		while (abs_timeout.tv_nsec >= 1000000000) {
 			/* over one billion nsec, add 1 sec */
 			abs_timeout.tv_sec++;
 			abs_timeout.tv_nsec -= 1000000000;
