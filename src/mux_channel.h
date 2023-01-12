@@ -43,7 +43,7 @@
 /** Check if a channel id is a master one */
 #define IS_MASTER_ID(channid) ({ __typeof__(channid) _cid = (channid); \
 				((_cid & 0x80000000) == 0) && \
-				_cid > IS_MASTER_ID_MIN; })
+				_cid >= IS_MASTER_ID_MIN; })
 
 /** Check if a channel id is a slave one */
 #define IS_SLAVE_ID(channid) (((channid) & 0x80000000) != 0)
