@@ -107,6 +107,8 @@ struct mux_channel {
 			int			flushing;
 			int			send_queue_empty;
 			int			ack_req;
+			uint32_t		ack_wait_time;
+			int			ack_wait_time_log;
 
 			/* Remote address. */
 			struct sockaddr			remoteaddr;

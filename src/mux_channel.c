@@ -30,6 +30,7 @@
 
 #define MUX_CHANNEL_IP_ACK_BYTES_INTL (1024 * 1024) /* 1 MB */
 #define MUX_CHANNEL_IP_SLAVE_FIFO_TIMEOUT 50 /* 50 ms */
+#define MUX_CHANNEL_IP_SLAVE_FIFO_TIMEOUT_WARNING 3000 /* 3 s */
 
 static int mux_channel_disconnect_ip_slave(struct mux_ctx *ctx,
 		uint32_t masterid);
@@ -109,6 +110,16 @@ static void ip_slave_queue_timer_cb(struct pomp_timer *timer, void *userdata)
 		return;
 	}
 
+	channel->ipslave.ack_wait_time += MUX_CHANNEL_IP_SLAVE_FIFO_TIMEOUT;
+	if ((channel->ipslave.ack_wait_time >=
+			MUX_CHANNEL_IP_SLAVE_FIFO_TIMEOUT_WARNING) &&
+	    !channel->ipslave.ack_wait_time_log) {
+		channel->ipslave.ack_wait_time_log = 1;
+		MUX_LOGW("slave 0x%08x: pending ack for more than %d ms",
+			  channel->chanid,
+			  channel->ipslave.ack_wait_time);
+	}
+
 	int pending = socket_pending_data(channel->ipslave.fd);
 	if (pending < 0 && pending != -ENOSYS)
 		MUX_LOG_ERR("socket_pending_data", pending);
@@ -118,9 +129,17 @@ static void ip_slave_queue_timer_cb(struct pomp_timer *timer, void *userdata)
 	if (pending > 0)
 		return;
 
+	if (channel->ipslave.ack_wait_time_log) {
+		MUX_LOGW("slave 0x%08x: send ack after %d ms",
+			  channel->chanid,
+			  channel->ipslave.ack_wait_time);
+	}
+
 	/* stop timer */
 	pomp_timer_clear(channel->ipslave.queue_timer);
 	channel->ipslave.ack_req = 0;
+	channel->ipslave.ack_wait_time = 0;
+	channel->ipslave.ack_wait_time_log = 0;
 
 	/* send ack */
 	MUX_LOGD("slave 0x%08x: send ack", channel->chanid);
@@ -177,6 +196,8 @@ static struct mux_channel *mux_channel_new(struct mux_ctx *ctx,
 		channel->ipslave.flushing = 0;
 		channel->ipslave.send_queue_empty = 1;
 		channel->ipslave.ack_req = 0;
+		channel->ipslave.ack_wait_time = 0;
+		channel->ipslave.ack_wait_time_log = 0;
 		channel->ipslave.queue_timer = pomp_timer_new(
 				mux_get_loop(ctx),
 				&ip_slave_queue_timer_cb, channel);
@@ -423,6 +444,8 @@ static int mux_channel_ip_request_ack(struct mux_ctx *ctx, uint32_t masterid)
 		return -EINVAL;
 
 	channel->ipslave.ack_req = 1;
+	channel->ipslave.ack_wait_time = 0;
+	channel->ipslave.ack_wait_time_log = 0;
 	MUX_LOGD("slave 0x%08x: delay ack", channel->chanid);
 	if (channel->ipslave.send_queue_empty) {
 		/* pomp has written all data, wait kernel socket send them */
@@ -913,6 +936,8 @@ static void slave_event_cb(struct pomp_ctx *ctx,
 			ctrl_msg.chanid = channel->chanid;
 			mux_send_ctrl_msg(channel->ctx, &ctrl_msg);
 			channel->ipslave.ack_req = 0;
+			channel->ipslave.ack_wait_time = 0;
+			channel->ipslave.ack_wait_time_log = 0;
 		}
 		if (channel->ipslave.flushing) {
 			/* This will trigger the abort of pending buffer, then
@@ -921,12 +946,16 @@ static void slave_event_cb(struct pomp_ctx *ctx,
 			pomp_ctx_stop(ctx);
 			channel->ipslave.state = MUX_IP_STATE_IDLE;
 			channel->ipslave.ack_req = 0;
+			channel->ipslave.ack_wait_time = 0;
+			channel->ipslave.ack_wait_time_log = 0;
 		} else {
 			/* Context will handle reconnection */
 			channel->ipslave.conn = NULL;
 			channel->ipslave.state = MUX_IP_STATE_CONNECTING;
 			channel->ipslave.send_queue_empty = 1;
 			channel->ipslave.ack_req = 0;
+			channel->ipslave.ack_wait_time = 0;
+			channel->ipslave.ack_wait_time_log = 0;
 		}
 		break;
 
