@@ -146,7 +146,7 @@ static void remote_event_cb(struct pomp_ctx *ctx, enum pomp_event event,
 		break;
 	case POMP_EVENT_MSG:
 		/* Never received for raw context */
-		CU_ASSERT_FATAL(-1);
+		CU_FAIL_FATAL("remote_event_cb POMP_EVENT_MSG not expected");
 		break;
 	}
 }
@@ -187,7 +187,7 @@ static void remote_start(enum mux_ip_proxy_transport transport,
 		CU_ASSERT_EQUAL_FATAL(res, 0);
 		break;
 	default:
-		CU_ASSERT_FATAL(-1);
+		CU_FAIL_FATAL("remote_start transport not expected");
 		break;
 	}
 
@@ -330,7 +330,7 @@ static void local_send_msg(void)
 			CU_ASSERT_EQUAL_FATAL(res, 0);
 			break;
 		default:
-			CU_ASSERT_FATAL(-1);
+			CU_FAIL_FATAL("local_send_msg transport not expected");
 			break;
 		}
 	}
@@ -356,7 +356,7 @@ static void local_event_cb(struct pomp_ctx *ctx, enum pomp_event event,
 		break;
 	case POMP_EVENT_MSG:
 		/* Never received for raw context */
-		CU_ASSERT_FATAL(-1);
+		CU_FAIL_FATAL("local_event_cb POMP_EVENT_MSG not expected");
 		break;
 	}
 }
@@ -400,7 +400,7 @@ static void local_start(struct mux_ip_proxy *self, uint16_t localport) {
 		local_send_msg();
 		break;
 	default:
-		CU_ASSERT_FATAL(-1);
+		CU_FAIL_FATAL("local_start transport not expected");
 		break;
 	}
 }

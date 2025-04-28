@@ -7,7 +7,7 @@ LOCAL_EXPORT_C_INCLUDES := $(LOCAL_PATH)/include/
 # This header list is currently used to generate a python binding
 LOCAL_EXPORT_CUSTOM_VARIABLES := LIBMUX_HEADERS=$\
 	$(LOCAL_PATH)/include/libmux.h:$(LOCAL_PATH)/include/libmux-arsdk.h;
-LOCAL_CFLAGS := -DMUX_API_EXPORTS -fvisibility=hidden
+LOCAL_CFLAGS := -DMUX_API_EXPORTS -fvisibility=hidden -D_GNU_SOURCE
 LOCAL_SRC_FILES := \
 	src/mux.c \
 	src/mux_channel.c \

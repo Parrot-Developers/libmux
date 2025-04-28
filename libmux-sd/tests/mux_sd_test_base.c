@@ -1,33 +1,39 @@
 /**
- * Copyright (c) 2019 Parrot Drones SAS
+ *    Copyright (C) 2022 Parrot Drones SAS
  *
- * Redistribution and use in source and binary forms, with or without
- * modification, are permitted provided that the following conditions are met:
- *   * Redistributions of source code must retain the above copyright
- *     notice, this list of conditions and the following disclaimer.
- *   * Redistributions in binary form must reproduce the above copyright
- *     notice, this list of conditions and the following disclaimer in the
- *     documentation and/or other materials provided with the distribution.
- *   * Neither the name of the Parrot Drones SAS Company nor the
- *     names of its contributors may be used to endorse or promote products
- *     derived from this software without specific prior written permission.
+ *    Redistribution and use in source and binary forms, with or without
+ *    modification, are permitted provided that the following conditions
+ *    are met:
+ *    * Redistributions of source code must retain the above copyright
+ *      notice, this list of conditions and the following disclaimer.
+ *    * Redistributions in binary form must reproduce the above copyright
+ *      notice, this list of conditions and the following disclaimer in
+ *      the documentation and/or other materials provided with the
+ *      distribution.
+ *    * Neither the name of the Parrot Company nor the names
+ *      of its contributors may be used to endorse or promote products
+ *      derived from this software without specific prior written
+ *      permission.
  *
- * THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
- * AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
- * IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE
- * ARE DISCLAIMED. IN NO EVENT SHALL THE PARROT DRONES SAS COMPANY BE LIABLE FOR
- * ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL
- * DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR
- * SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER
- * CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY,
- * OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
- * OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+ *    THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS
+ *    "AS IS" AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT
+ *    LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS
+ *    FOR A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL THE
+ *    PARROT COMPANY BE LIABLE FOR ANY DIRECT, INDIRECT,
+ *    INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING,
+ *    BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS
+ *    OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED
+ *    AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY,
+ *    OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT
+ *    OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF
+ *    SUCH DAMAGE.
  */
+
 #include <errno.h>
 #include <netinet/in.h>
 
-#include "mux_test.h"
-#include "mux_test_base.h"
+#include "mux_sd_test.h"
+#include "mux_sd_test_base.h"
 
 struct mux_test_tip {
 	enum mux_test_tip_type type;
@@ -101,13 +107,13 @@ static void tip_event_cb(struct pomp_ctx *ctx,
 		CU_ASSERT_PTR_NOT_NULL_FATAL(tip->mctx);
 
 		tip->conn = conn;
-		(*tip->cbs.on_connect)(tip, tip->cbs.userdata);
+		tip->cbs.on_connect(tip, tip->cbs.userdata);
 		break;
 
 	case POMP_EVENT_DISCONNECTED:
 		CU_ASSERT_EQUAL(tip->conn, conn);
 
-		(*tip->cbs.on_disconnect)(tip, tip->cbs.userdata);
+		tip->cbs.on_disconnect(tip, tip->cbs.userdata);
 		break;
 
 	case POMP_EVENT_MSG:
@@ -211,7 +217,7 @@ static void client_connect_cb(struct mux_test_tip *tip, void *userdata)
 	CU_ASSERT_PTR_NOT_NULL_FATAL(env);
 
 	if (env->cbs.cli_connect != NULL)
-		(*env->cbs.cli_connect)(env, env->cbs.userdata);
+		env->cbs.cli_connect(env, env->cbs.userdata);
 }
 
 static void client_disconnect_cb(struct mux_test_tip *tip, void *userdata)
@@ -220,7 +226,7 @@ static void client_disconnect_cb(struct mux_test_tip *tip, void *userdata)
 	CU_ASSERT_PTR_NOT_NULL_FATAL(env);
 
 	if (env->cbs.cli_disconnect != NULL)
-		(*env->cbs.cli_disconnect)(env, env->cbs.userdata);
+		env->cbs.cli_disconnect(env, env->cbs.userdata);
 
 }
 
@@ -231,7 +237,7 @@ static void client_rcv_data_cb(struct mux_test_tip *tip,
 	CU_ASSERT_PTR_NOT_NULL_FATAL(env);
 
 	if (env->cbs.cli_rcv_data != NULL)
-		(*env->cbs.cli_rcv_data)(env, chanid, buf, env->cbs.userdata);
+		env->cbs.cli_rcv_data(env, chanid, buf, env->cbs.userdata);
 }
 
 static void server_connect_cb(struct mux_test_tip *tip, void *userdata)
@@ -240,7 +246,7 @@ static void server_connect_cb(struct mux_test_tip *tip, void *userdata)
 	CU_ASSERT_PTR_NOT_NULL_FATAL(env);
 
 	if (env->cbs.srv_connect != NULL)
-		(*env->cbs.srv_connect)(env, env->cbs.userdata);
+		env->cbs.srv_connect(env, env->cbs.userdata);
 }
 
 static void server_disconnect_cb(struct mux_test_tip *tip, void *userdata)
@@ -249,7 +255,7 @@ static void server_disconnect_cb(struct mux_test_tip *tip, void *userdata)
 	CU_ASSERT_PTR_NOT_NULL_FATAL(env);
 
 	if (env->cbs.srv_disconnect != NULL)
-		(*env->cbs.srv_disconnect)(env, env->cbs.userdata);
+		env->cbs.srv_disconnect(env, env->cbs.userdata);
 }
 
 static void server_rcv_data_cb(struct mux_test_tip *tip,
@@ -259,7 +265,7 @@ static void server_rcv_data_cb(struct mux_test_tip *tip,
 	CU_ASSERT_PTR_NOT_NULL_FATAL(env);
 
 	if (env->cbs.srv_rcv_data != NULL)
-		(*env->cbs.srv_rcv_data)(env, chanid, buf, env->cbs.userdata);
+		env->cbs.srv_rcv_data(env, chanid, buf, env->cbs.userdata);
 }
 
 int mux_test_env_new(struct mux_test_env_cbs *cbs,
@@ -307,10 +313,13 @@ int mux_test_env_destroy(struct mux_test_env *env)
 {
 	CU_ASSERT_PTR_NOT_NULL_FATAL(env);
 
-	mux_test_tip_destroy(env->client);
-	mux_test_tip_destroy(env->server);
+	int res = mux_test_tip_destroy(env->client);
+	CU_ASSERT_EQUAL_FATAL(res, 0);
+	res = mux_test_tip_destroy(env->server);
+	CU_ASSERT_EQUAL_FATAL(res, 0);
 
-	pomp_loop_destroy(env->loop);
+	res = pomp_loop_destroy(env->loop);
+	CU_ASSERT_EQUAL_FATAL(res, 0);
 
 	free(env);
 	return 0;
@@ -354,17 +363,17 @@ int mux_test_env_start_srv(struct mux_test_env *env)
 
 struct pomp_loop *mux_test_env_get_loop(struct mux_test_env *env)
 {
-	return  (env != NULL) ? env->loop : NULL;
+	return (env != NULL) ? env->loop : NULL;
 }
 
 struct mux_ctx *mux_test_env_get_cli_mux(struct mux_test_env *env)
 {
-	return  (env != NULL) ? mux_test_tip_get_mux(env->client) : NULL;
+	return (env != NULL) ? mux_test_tip_get_mux(env->client) : NULL;
 }
 
 struct mux_ctx *mux_test_env_get_srv_mux(struct mux_test_env *env)
 {
-	return  (env != NULL) ? mux_test_tip_get_mux(env->server) : NULL;
+	return (env != NULL) ? mux_test_tip_get_mux(env->server) : NULL;
 }
 
 int mux_test_env_run_loop(struct mux_test_env *env)
@@ -375,6 +384,7 @@ int mux_test_env_run_loop(struct mux_test_env *env)
 	while (env->running) {
 		pomp_loop_wait_and_process(env->loop, -1);
 	}
+	pomp_loop_idle_flush(env->loop);
 
 	return 0;
 }

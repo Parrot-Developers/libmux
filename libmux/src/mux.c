@@ -737,6 +737,18 @@ static void *rx_thread(void *userdata)
 {
 	struct mux_ctx *ctx = userdata;
 
+#if defined(__APPLE__)
+#	if !TARGET_OS_IPHONE
+	int err = pthread_setname_np("mux_rx");
+	if (err != 0)
+		ULOG_ERRNO("pthread_setname_np", err);
+#	endif
+#else
+	int err = pthread_setname_np(pthread_self(), "mux_rx");
+	if (err != 0)
+		ULOG_ERRNO("pthread_setname_np", err);
+#endif
+
 	while (!ctx->stopped && !ctx->eof) {
 		if (do_fd_read(ctx))
 			mux_queue_put_buf(ctx->rx.queue, ctx->rx.buf);
@@ -754,6 +766,18 @@ static void *rx_thread(void *userdata)
 static void *tx_thread(void *userdata)
 {
 	struct mux_ctx *ctx = userdata;
+
+#if defined(__APPLE__)
+#	if !TARGET_OS_IPHONE
+	int err = pthread_setname_np("mux_tx");
+	if (err != 0)
+		ULOG_ERRNO("pthread_setname_np", err);
+#	endif
+#else
+	int err = pthread_setname_np(pthread_self(), "mux_tx");
+	if (err != 0)
+		ULOG_ERRNO("pthread_setname_np", err);
+#endif
 
 	while (!ctx->stopped && !ctx->eof) {
 		if (ctx->tx.buf == NULL)
@@ -1401,6 +1425,55 @@ struct mux_channel *mux_find_channel(struct mux_ctx *ctx, uint32_t chanid)
 	pthread_mutex_unlock(&ctx->mutex);
 
 	return channel;
+}
+
+struct mux_channel *
+mux_find_and_remove_channels(struct mux_ctx *ctx,
+			     enum mux_channel_type channel_type)
+{
+	struct mux_channel *prev = NULL, *channel, *next, *new_prev = NULL;
+	struct mux_channel *channels = NULL;
+
+	if (ctx == NULL)
+		return NULL;
+
+	pthread_mutex_lock(&ctx->mutex);
+
+	channel = ctx->channels;
+	while (channel != NULL) {
+		/* We only want to handle selected channel type */
+		if (channel->type != channel_type) {
+			prev = channel;
+			channel = channel->next;
+			continue;
+		}
+		/* Remove channel from list (i.e. jump from prev to next)
+		 * or reset list head if there is no previous channel */
+		next = channel->next;
+		if (prev)
+			prev->next = next;
+		else
+			ctx->channels = next;
+		/* Remove pointer-to-next from channel */
+		channel->next = NULL;
+		/* Update last pointer-to-next of the return list */
+		if (new_prev)
+			new_prev->next = channel;
+		/* Set this channel as the last on the return list */
+		new_prev = channel;
+		/* Initialize the return list if needed */
+		if (!channels)
+			channels = channel;
+		/* If the channel is the current frame channel, reset the
+		 * current frame channel as it will be removed */
+		if (ctx->channel == channel)
+			ctx->channel = NULL;
+		channel = next;
+	}
+
+	pthread_mutex_unlock(&ctx->mutex);
+
+	return channels;
 }
 
 /**

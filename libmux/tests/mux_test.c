@@ -89,9 +89,15 @@ static void check_fds(const int *fds1, const int *fds2)
 			target[0] = '\0';
 			if (readlink(path, target, sizeof(target)) < 0)
 				snprintf(target, sizeof(target), "???");
+
+			/* Ignore ulog fd */
+			if (strcmp("/dev/ulog_main", target) == 0)
+				goto next;
+
 			fprintf(stderr, "Leaked fd %d (%s)\n", *fds2, target);
 		}
 
+next:
 		/* Check next fd */
 		fds2++;
 	}

@@ -939,24 +939,12 @@ static void slave_event_cb(struct pomp_ctx *ctx,
 			channel->ipslave.ack_wait_time = 0;
 			channel->ipslave.ack_wait_time_log = 0;
 		}
-		if (channel->ipslave.flushing) {
-			/* This will trigger the abort of pending buffer, then
-			 * slave_send_cb will finish the disconnection */
-			channel->ipslave.conn = NULL;
-			pomp_ctx_stop(ctx);
-			channel->ipslave.state = MUX_IP_STATE_IDLE;
-			channel->ipslave.ack_req = 0;
-			channel->ipslave.ack_wait_time = 0;
-			channel->ipslave.ack_wait_time_log = 0;
-		} else {
-			/* Context will handle reconnection */
-			channel->ipslave.conn = NULL;
-			channel->ipslave.state = MUX_IP_STATE_CONNECTING;
-			channel->ipslave.send_queue_empty = 1;
-			channel->ipslave.ack_req = 0;
-			channel->ipslave.ack_wait_time = 0;
-			channel->ipslave.ack_wait_time_log = 0;
-		}
+		channel->ipslave.conn = NULL;
+		pomp_ctx_stop(ctx);
+		channel->ipslave.state = MUX_IP_STATE_IDLE;
+		channel->ipslave.ack_req = 0;
+		channel->ipslave.ack_wait_time = 0;
+		channel->ipslave.ack_wait_time_log = 0;
 		break;
 
 	case POMP_EVENT_MSG:
@@ -1564,6 +1552,42 @@ static void mux_channel_ctrl_reset(struct mux_ctx *ctx)
 	}
 }
 
+/**
+ * Reset ip_slave channels
+ * @param ctx : mux context.
+ */
+static void mux_channel_ipslave_reset(struct mux_ctx *ctx)
+{
+	int count = 0;
+	struct mux_channel *channels = NULL;
+	struct mux_channel *channel, *next = NULL;
+
+	/* get all channels */
+	channels = mux_find_and_remove_channels(ctx, MUX_CHANNEL_TYPE_IP_SLAVE);
+
+	/* close all channels */
+	channel = channels;
+	while (channel) {
+		count++;
+		mux_channel_close_internal(channel, 0);
+		channel = channel->next;
+	}
+	MUX_LOGI("Force closed %d leftover IP_SLAVE channels", count);
+
+	/* notify channel reset by peer */
+	channel = channels;
+	while (channel) {
+		if (channel->cb)
+			(*channel->cb) (channel->ctx, channel->chanid,
+					MUX_CHANNEL_RESET, NULL,
+					channel->userdata);
+		next = channel->next;
+		/* destroy channel */
+		mux_channel_destroy(channel);
+		channel = next;
+	}
+}
+
 int mux_send_proxy_ip_resolve_ack(struct mux_ctx *ctx, uint32_t proxy_id,
 		struct mux_ip_proxy_protocol *protocol,
 		const char *hostname, uint32_t hostaddr, uint16_t port)
@@ -1776,6 +1800,9 @@ int mux_channel_recv_ctrl_msg(struct mux_ctx *ctx,
 			res = mux_send_handshake(ctx, 1);
 			if (res < 0)
 				MUX_LOG_ERR("mux_send_handshake", -res);
+			/* On handshake, remove all IP_SLAVE channels that might
+			 * have been left by previous connections */
+			mux_channel_ipslave_reset(ctx);
 		}
 		break;
 

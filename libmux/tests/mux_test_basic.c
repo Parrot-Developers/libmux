@@ -62,10 +62,7 @@ struct test_data {
 	} srv;
 };
 
-
-
-struct test_data s_data;
-
+static struct test_data s_data;
 
 static int tx_cb(struct mux_ctx *ctx, struct pomp_buffer *buf,
 			void *userdata)

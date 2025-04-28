@@ -52,6 +52,10 @@
 #  include <netinet/in.h>
 #endif /* !_WIN32 */
 
+#if defined(__APPLE__)
+#	include <TargetConditionals.h>
+#endif
+
 #define POMP_ENABLE_ADVANCED_API
 #if defined(ALCHEMY_BUILD) || defined(ANDROID)
 #  include <libpomp.h>
@@ -188,6 +192,10 @@ int mux_notify_buf(struct mux_ctx *ctx, uint32_t chanid,
 		struct pomp_buffer *buf);
 
 struct mux_channel *mux_find_channel(struct mux_ctx *ctx, uint32_t chanid);
+
+struct mux_channel *
+mux_find_and_remove_channels(struct mux_ctx *ctx,
+			     enum mux_channel_type channel_type);
 
 int mux_add_channel(struct mux_ctx *ctx, struct mux_channel *channel);
 
